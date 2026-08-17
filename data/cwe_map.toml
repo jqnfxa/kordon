@@ -581,6 +581,19 @@ check = "kordon-unsigned-addition"
 cwe = 190
 confidence = "low"
 
+# CWE-401 at the cause rather than the symptom. A class that releases a raw
+# owning pointer only when a bool member permits it can leak on any path that
+# leaves the flag unset, and double-free on copy (hence CWE-415 as well). On the
+# reference corpus this reports 5 class-level sites against 66 recorded leak
+# positions -- the 66 are consequences in unrelated functions that merely held
+# such an object as a local. Verified to go silent on the corrected tree, where
+# the flag was replaced by a member smart pointer.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-manual-ownership-flag"
+cwe = 401
+confidence = "low"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through

@@ -242,7 +242,48 @@ unless(isInTemplateInstantiation())",
 wraps to a small value instead of growing",
 };
 
-pub const CHECKS: &[QueryCheck] = &[UNSIGNED_SUBTRACTION, UNSIGNED_ADDITION];
+/// CWE-401, ownership expressed as a bool instead of in the type.
+///
+/// Matches a `delete` of a pointer member that only runs when a *boolean
+/// member* says so -- `if (m_data && m_flgAllocMemory) delete[] m_data;`. The
+/// class owns memory conditionally, and the condition is a flag that ordinary
+/// code can get wrong: leave it unset on one constructor path and the memory
+/// leaks at every scope exit; copy the object and two owners believe they hold
+/// the same pointer.
+///
+/// This targets the **cause**, not the symptom, and that is the whole point.
+/// On the reference corpus 66 CWE-401 positions are recorded across 18 files,
+/// almost all reported at a closing brace -- the scope exit of some unrelated
+/// function that merely happened to hold a `Matrix` or a `Vector` local. They
+/// are 66 consequences of a handful of class-level defects. Fixing the sites is
+/// impossible; fixing the classes removes all of them.
+///
+/// Measured: 5 matches on the broken tree (3 in vector.cpp, 2 in matrix.cpp)
+/// and **0 on the corrected tree**, where the fix deleted the flag outright and
+/// moved ownership into a member smart pointer:
+///
+///   before   if (m_data && m_flgAllocMemory) { delete[] m_data; }
+///   after    m_own.reset();
+///
+/// Consequence for scoring: this check will barely move recall against a
+/// line-keyed ground truth, because it reports ~5 causes where the list records
+/// 66 effects. That is a property of the measurement, not of the check.
+pub const MANUAL_OWNERSHIP_FLAG: QueryCheck = QueryCheck {
+    id: "kordon-manual-ownership-flag",
+    base: "cxxDeleteExpr(\
+hasDescendant(memberExpr(member(fieldDecl().bind(\"p\")))), \
+hasAncestor(ifStmt(hasCondition(hasDescendant(\
+memberExpr(member(fieldDecl(hasType(booleanType())).bind(\"flag\"))))))), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation())",
+    guarded: false,
+    message: "owning pointer member is released only when a bool member permits it; \
+ownership lives in a flag rather than in the type, so any path that leaves the flag wrong \
+leaks the memory or frees it twice",
+};
+
+pub const CHECKS: &[QueryCheck] =
+    &[UNSIGNED_SUBTRACTION, UNSIGNED_ADDITION, MANUAL_OWNERSHIP_FLAG];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
 pub fn find_binary() -> Option<String> {
@@ -381,15 +422,22 @@ fn run_one(
 
 /// Parse clang-query's match output.
 ///
-/// Each match prints a source location line ending in `note: "root" binds
-/// here`. Matches outside `root` belong to a dependency, not this project.
+/// One match prints a location line per *bound node*, not one per match: a
+/// matcher that binds `p` and `flag` emits three lines, and only the one
+/// labelled `"root"` is the finding. Accepting any `binds here` line multiplied
+/// every finding by the number of binds. This stayed hidden until a check bound
+/// names outside an `unless(...)` clause -- inside one, nothing is emitted on a
+/// match, so the earlier checks never exposed it.
+///
+/// Matches outside `root` belong to a dependency, not this project.
 pub fn parse_matches(text: &str, check_id: &str, root: &Path) -> Vec<RawMatch> {
     let mut out = Vec::new();
     for line in text.lines() {
         let Some(prefix) = line.split(": note:").next() else {
             continue;
         };
-        if !line.contains("binds here") {
+        // Only the root binding is the finding; the rest are its parts.
+        if !line.contains("\"root\" binds here") {
             continue;
         }
         // `<path>:<line>:<col>`; split from the right, since a path may
@@ -442,6 +490,19 @@ Match #2:\n\n\
         // A dependency's headers are not this project's defects.
         let m = parse_matches(SAMPLE, "x", Path::new("/proj"));
         assert!(m.iter().all(|r| !r.file.starts_with("/elsewhere")));
+    }
+
+    #[test]
+    fn one_match_with_several_binds_yields_one_finding() {
+        // clang-query prints a line per bound node. Counting them all inflated
+        // every finding by the number of binds in the matcher.
+        let text = "\
+/proj/a.cpp:64:5: note: \"flag\" binds here\n\
+/proj/a.cpp:63:5: note: \"p\" binds here\n\
+/proj/a.cpp:56:13: note: \"root\" binds here\n";
+        let m = parse_matches(text, "x", Path::new("/proj"));
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].line, m[0].column), (56, 13));
     }
 
     #[test]
