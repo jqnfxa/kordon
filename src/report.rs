@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::ctu::CallGraph;
 use crate::cwe::CweTable;
 use crate::dedup::MergedFinding;
 use crate::finding::{Confidence, CweSource};
@@ -19,6 +20,8 @@ pub struct Report<'a> {
     pub table: &'a CweTable,
     /// Files Kordon handed to the engines.
     pub analyzed_files: usize,
+    /// Cross-TU dependencies observed during the CTU pass. Empty without --ctu.
+    pub call_graph: &'a CallGraph,
 }
 
 impl<'a> Report<'a> {
@@ -53,6 +56,7 @@ impl<'a> Report<'a> {
 
         out.push_str(&self.render_engines());
         out.push_str(&self.render_findings(verbose, show_all));
+        out.push_str(&self.render_call_graph());
         out.push_str(&self.render_gaps());
         out.push_str(&self.render_caveats());
 
@@ -176,6 +180,36 @@ impl<'a> Report<'a> {
         out
     }
 
+    /// Cross-TU dependency structure, when CTU ran.
+    ///
+    /// These are dependencies the analyzer actually had to follow to reason
+    /// about a unit, not every symbol a file mentions -- so a unit high in this
+    /// ranking is one whose defects propagate furthest.
+    fn render_call_graph(&self) -> String {
+        if self.call_graph.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        out.push_str("\n═══ Cross-TU dependencies ═══\n\n");
+        out.push_str(&format!(
+            "  {} unit(s) pulled definitions from {} edge(s)\n\n",
+            self.call_graph.edges.len(),
+            self.call_graph.edge_count()
+        ));
+
+        out.push_str("  Most depended upon — a defect here reaches every dependent:\n");
+        for (path, count) in self.call_graph.most_depended_upon(10) {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            out.push_str(&format!("    {count:>4}  {name}\n"));
+        }
+        out.push('\n');
+        out
+    }
+
     /// Everything Kordon knows it did not cover. This section is the point of
     /// the report as much as the findings are.
     fn render_gaps(&self) -> String {
@@ -238,10 +272,20 @@ impl<'a> Report<'a> {
     fn render_caveats(&self) -> String {
         let mut out = String::new();
         out.push_str("═══ What this report does not cover ═══\n\n");
-        out.push_str(
-            "  • Single translation unit only. Cross-TU (CTU) analysis is not wired up\n    \
-             yet, so any function defined in another .cpp is opaque to the analyzer.\n",
-        );
+        // Must track what actually ran: claiming "no CTU" after a CTU pass, or
+        // vice versa, is exactly the kind of quiet inaccuracy this section
+        // exists to prevent.
+        if self.call_graph.is_empty() {
+            out.push_str(
+                "  • Single translation unit only. Cross-TU analysis did not run, so any\n    \
+                 function defined in another .cpp was opaque to the analyzer. Pass --ctu.\n",
+            );
+        } else {
+            out.push_str(
+                "  • Cross-TU analysis ran, but only over units that compiled and were\n    \
+                 indexed. Definitions in any unindexed unit stayed opaque everywhere.\n",
+            );
+        }
         out.push_str(
             "  • Static analysis only. No sanitizer run, so bounds/UAF/overflow defects\n    \
              that depend on runtime values are unproven either way.\n",

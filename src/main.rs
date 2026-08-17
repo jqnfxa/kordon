@@ -138,6 +138,7 @@ fn main() -> Result<()> {
     }
 
     let mut runs: Vec<ToolRun> = Vec::new();
+    let mut call_graph = ctu::CallGraph::default();
 
     if cli.no_cppcheck {
         runs.push(ToolRun::skipped(tools::cppcheck::tool(), "--no-cppcheck"));
@@ -206,7 +207,7 @@ fn main() -> Result<()> {
                     index.failed.len(),
                     index.definition_count()
                 );
-                runs.push(tools::clang_sa::run(
+                let (run, graph) = tools::clang_sa::run(
                     &sources,
                     cli.compile_db.as_deref(),
                     &extra,
@@ -214,7 +215,9 @@ fn main() -> Result<()> {
                     &ctu_scratch.join("reports"),
                     cli.jobs,
                     &table,
-                ));
+                );
+                runs.push(run);
+                call_graph = graph;
             }
             Err(err) => {
                 runs.push(ToolRun::failed(
@@ -244,6 +247,7 @@ fn main() -> Result<()> {
         merged: &merged,
         table: &table,
         analyzed_files: sources.len(),
+        call_graph: &call_graph,
     };
 
     if cli.json {

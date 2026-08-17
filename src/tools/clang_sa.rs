@@ -17,7 +17,7 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use crate::ctu::{compile_args_for, CtuIndex};
+use crate::ctu::{compile_args_for, parse_ctu_progress, CallGraph, CtuIndex};
 use crate::cwe::CweTable;
 use crate::finding::{Confidence, Event, Finding, Severity, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
@@ -44,15 +44,18 @@ pub fn run(
     out_dir: &Path,
     jobs: usize,
     table: &CweTable,
-) -> ToolRun {
+) -> (ToolRun, CallGraph) {
     if std::fs::create_dir_all(out_dir).is_err() {
-        return ToolRun::failed(tool(), format!("could not create {}", out_dir.display()));
+        return (
+            ToolRun::failed(tool(), format!("could not create {}", out_dir.display())),
+            CallGraph::default(),
+        );
     }
 
     let shards = jobs.clamp(1, sources.len().max(1));
     let chunk = sources.len().div_ceil(shards);
 
-    let shard_results: Vec<(Vec<PathBuf>, usize)> = std::thread::scope(|scope| {
+    let shard_results: Vec<(Vec<PathBuf>, usize, CallGraph)> = std::thread::scope(|scope| {
         let handles: Vec<_> = sources
             .chunks(chunk)
             .enumerate()
@@ -60,15 +63,20 @@ pub fn run(
                 scope.spawn(move || {
                     let mut reports = Vec::new();
                     let mut failed = 0usize;
+                    let mut graph = CallGraph::default();
                     for (i, source) in files.iter().enumerate() {
                         let out = out_dir.join(format!("report-{shard}-{i}.plist"));
                         match analyze_one(source, compile_db, extra_args, index, &out) {
-                            Ok(true) => reports.push(out),
-                            Ok(false) => {}
+                            Ok((produced, imports)) => {
+                                graph.merge(imports);
+                                if produced {
+                                    reports.push(out);
+                                }
+                            }
                             Err(_) => failed += 1,
                         }
                     }
-                    (reports, failed)
+                    (reports, failed, graph)
                 })
             })
             .collect();
@@ -79,7 +87,9 @@ pub fn run(
     let mut notes = Vec::new();
     let mut failed_units = 0;
 
-    for (reports, failed) in shard_results {
+    let mut graph = CallGraph::default();
+    for (reports, failed, shard_graph) in shard_results {
+        graph.merge(shard_graph);
         failed_units += failed;
         for report in reports {
             match parse_plist(&report, table) {
@@ -105,22 +115,29 @@ pub fn run(
         ));
     }
 
-    ToolRun {
-        tool: tool(),
-        outcome: ToolOutcome::Ran,
-        findings,
-        notes,
-    }
+    (
+        ToolRun {
+            tool: tool(),
+            outcome: ToolOutcome::Ran,
+            findings,
+            notes,
+        },
+        graph,
+    )
 }
 
-/// Analyze one translation unit. Returns whether a report file was produced.
+/// Analyze one translation unit.
+///
+/// Returns whether a report was produced, plus the units this one had to
+/// import definitions from -- the analyzer reports those itself when
+/// `display-ctu-progress` is on, which is where the call graph comes from.
 fn analyze_one(
     source: &Path,
     compile_db: Option<&Path>,
     extra_args: &[String],
     index: &CtuIndex,
     out: &Path,
-) -> Result<bool> {
+) -> Result<(bool, CallGraph)> {
     let mut cmd = Command::new("clang++");
     cmd.arg("--analyze")
         // Anything else silently discards cross-file diagnostics.
@@ -136,7 +153,7 @@ fn analyze_one(
         .arg("-analyzer-config")
         .arg("-Xanalyzer")
         .arg(format!(
-            "experimental-enable-naive-ctu-analysis=true,ctu-dir={}",
+            "experimental-enable-naive-ctu-analysis=true,ctu-dir={},display-ctu-progress=true",
             index.dir.display()
         ));
 
@@ -153,13 +170,13 @@ fn analyze_one(
     }
     cmd.arg(source);
 
-    let status = cmd
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
+    // stderr carries the CTU import lines, so it has to be captured.
+    let output = cmd.stdout(std::process::Stdio::null()).output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let imports = parse_ctu_progress(source, &stderr);
 
     // A non-zero exit means the unit did not compile; there is nothing to read.
-    Ok(status.success() && out.exists())
+    Ok((output.status.success() && out.exists(), imports))
 }
 
 /// Default trust for a Clang SA checker. Everything here is path-sensitive, so
