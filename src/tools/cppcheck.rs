@@ -26,7 +26,7 @@ pub fn tool() -> Tool {
 /// (`missingIncludeSystem` for every standard header) and no defect signal.
 pub fn run(
     binary: &str,
-    target: &Target,
+    sources: &[PathBuf],
     std: &str,
     jobs: usize,
     exhaustive: bool,
@@ -47,15 +47,11 @@ pub fn run(
         cmd.arg("--check-level=exhaustive");
     }
 
-    match target {
-        Target::CompileDb(path) => {
-            cmd.arg(format!("--project={}", path.display()));
-        }
-        Target::Sources(files) => {
-            for file in files {
-                cmd.arg(file);
-            }
-        }
+    // Always an explicit file list rather than --project: the caller has
+    // already decided which units are in scope, and pointing cppcheck at the
+    // project would re-add the ones it excluded.
+    for source in sources {
+        cmd.arg(source);
     }
 
     let output = match cmd.output() {
@@ -77,11 +73,6 @@ pub fn run(
         },
         Err(err) => ToolRun::failed(tool(), format!("could not parse cppcheck XML: {err}")),
     }
-}
-
-pub enum Target {
-    CompileDb(PathBuf),
-    Sources(Vec<PathBuf>),
 }
 
 /// cppcheck's own severity vocabulary.

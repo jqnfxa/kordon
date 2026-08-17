@@ -20,6 +20,9 @@ pub struct Report<'a> {
     pub table: &'a CweTable,
     /// Files Kordon handed to the engines.
     pub analyzed_files: usize,
+    /// Sources found on disk but absent from the compile database, so not part
+    /// of the build and deliberately not analyzed.
+    pub unlisted_files: usize,
     /// Cross-TU dependencies observed during the CTU pass. Empty without --ctu.
     pub call_graph: &'a CallGraph,
 }
@@ -80,6 +83,12 @@ impl<'a> Report<'a> {
         }
 
         out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
+        if self.unlisted_files > 0 {
+            out.push_str(&format!(
+                "  {} file(s) skipped — absent from compile_commands.json, so not part of\n                   the build. They were NOT analyzed; this is not a clean result for them.\n",
+                self.unlisted_files
+            ));
+        }
         out
     }
 
@@ -347,6 +356,7 @@ impl<'a> Report<'a> {
         serde_json::json!({
             "kordon_version": env!("CARGO_PKG_VERSION"),
             "analyzed_files": self.analyzed_files,
+            "unlisted_files": self.unlisted_files,
             "engines": engines,
             "findings": findings,
             "summary": {

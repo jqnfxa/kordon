@@ -17,7 +17,8 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use crate::ctu::{compile_args_for, parse_ctu_progress, CallGraph, CtuIndex};
+use crate::compile_db::CompileDb;
+use crate::ctu::{parse_ctu_progress, CallGraph, CtuIndex};
 use crate::cwe::CweTable;
 use crate::finding::{Confidence, Event, Finding, Severity, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
@@ -38,7 +39,7 @@ optin.cplusplus.UninitializedObject,optin.portability.UnixAPI";
 /// Run the analyzer over `sources` with the CTU index active.
 pub fn run(
     sources: &[PathBuf],
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     index: &CtuIndex,
     out_dir: &Path,
@@ -133,7 +134,7 @@ pub fn run(
 /// `display-ctu-progress` is on, which is where the call graph comes from.
 fn analyze_one(
     source: &Path,
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     index: &CtuIndex,
     out: &Path,
@@ -158,7 +159,7 @@ fn analyze_one(
         ));
 
     if let Some(db) = compile_db {
-        if let Some(args) = compile_args_for(db, source) {
+        if let Some(args) = db.args_for(source) {
             for arg in args {
                 cmd.arg(arg);
             }

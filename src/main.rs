@@ -6,6 +6,7 @@
 //! every finding to a CWE, merges what the engines independently agree on,
 //! and reports honestly on what none of them covered.
 
+mod compile_db;
 mod ctu;
 mod cwe;
 mod dedup;
@@ -19,6 +20,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 
+use crate::compile_db::CompileDb;
 use crate::cwe::CweTable;
 use crate::report::Report;
 use crate::tools::{ToolRun, ToolOutcome};
@@ -132,9 +134,29 @@ fn main() -> Result<()> {
         None => CweTable::builtin()?,
     };
 
-    let sources = collect_sources(&cli.path)?;
-    if sources.is_empty() {
+    let compile_db = match &cli.compile_db {
+        Some(path) => Some(CompileDb::load(path)?),
+        None => None,
+    };
+
+    let discovered = collect_sources(&cli.path)?;
+    if discovered.is_empty() {
         bail!("no C/C++ sources found under {}", cli.path.display());
+    }
+
+    // A file with no database entry is not part of the build. Compiling it with
+    // no flags produces a parse failure and nothing else, so it is excluded and
+    // reported rather than analyzed badly. On ACL this covers 212 of 486
+    // discovered sources, 186 of them under tests/.
+    let (sources, unlisted) = match &compile_db {
+        Some(db) => db.partition(&discovered),
+        None => (discovered.clone(), Vec::new()),
+    };
+    if sources.is_empty() {
+        bail!(
+            "none of the {} discovered source(s) appear in the compile database",
+            discovered.len()
+        );
     }
 
     let mut runs: Vec<ToolRun> = Vec::new();
@@ -148,13 +170,9 @@ fn main() -> Result<()> {
             "binary not found in PATH",
         ));
     } else {
-        let target = match &cli.compile_db {
-            Some(db) => tools::cppcheck::Target::CompileDb(compile_db_path(db)),
-            None => tools::cppcheck::Target::Sources(sources.clone()),
-        };
         runs.push(tools::cppcheck::run(
             "cppcheck",
-            &target,
+            &sources,
             &cli.std,
             cli.jobs,
             cli.exhaustive,
@@ -177,7 +195,7 @@ fn main() -> Result<()> {
         runs.push(tools::clang_tidy::run(
             "clang-tidy",
             &sources,
-            cli.compile_db.as_deref(),
+            compile_db.as_ref().map(|d| d.path()),
             &extra,
             tools::clang_tidy::DEFAULT_CHECKS,
             cli.jobs,
@@ -195,7 +213,7 @@ fn main() -> Result<()> {
         let extra = vec![format!("-std={}", cli.std)];
         match ctu::build_index(
             &sources,
-            cli.compile_db.as_deref(),
+            compile_db.as_ref(),
             &extra,
             &ctu_scratch,
             cli.jobs,
@@ -209,7 +227,7 @@ fn main() -> Result<()> {
                 );
                 let (run, graph) = tools::clang_sa::run(
                     &sources,
-                    cli.compile_db.as_deref(),
+                    compile_db.as_ref(),
                     &extra,
                     &index,
                     &ctu_scratch.join("reports"),
@@ -247,6 +265,7 @@ fn main() -> Result<()> {
         merged: &merged,
         table: &table,
         analyzed_files: sources.len(),
+        unlisted_files: unlisted.len(),
         call_graph: &call_graph,
     };
 
@@ -326,14 +345,6 @@ fn selftest(report: &Report, required: &str) -> Result<()> {
     }
 }
 
-fn compile_db_path(given: &Path) -> PathBuf {
-    if given.is_dir() {
-        given.join("compile_commands.json")
-    } else {
-        given.to_path_buf()
-    }
-}
-
 /// Recursively collect C/C++ sources under `root`.
 ///
 /// Headers are deliberately not passed as compilation units -- they are
@@ -401,11 +412,4 @@ mod tests {
         assert!(collect_sources(Path::new("/nonexistent/kordon/xyz")).is_err());
     }
 
-    #[test]
-    fn compile_db_accepts_dir_or_file() {
-        assert_eq!(
-            compile_db_path(Path::new("/tmp/some-file.json")),
-            PathBuf::from("/tmp/some-file.json")
-        );
-    }
 }

@@ -30,6 +30,8 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use crate::compile_db::CompileDb;
+
 /// Which translation units depend on definitions in which others.
 ///
 /// Built from the analyzer's own CTU imports rather than from a parsed AST.
@@ -159,7 +161,7 @@ pub fn find_extdef_tool() -> Option<String> {
 /// compile cannot be serialized, and drops out of the index entirely.
 pub fn build_index(
     sources: &[PathBuf],
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     dir: &Path,
     jobs: usize,
@@ -236,7 +238,7 @@ struct ShardOutcome {
 fn index_shard(
     extdef: &str,
     files: &[PathBuf],
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     dir: &Path,
 ) -> ShardOutcome {
@@ -267,7 +269,7 @@ fn index_shard(
 /// Serialize one translation unit's AST to `<dir>/ast/<abs source path>.ast`.
 fn emit_ast(
     source: &Path,
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     dir: &Path,
 ) -> Result<()> {
@@ -282,7 +284,7 @@ fn emit_ast(
     // With a compile database, reuse that unit's real flags: include paths and
     // defines decide whether the unit parses at all.
     if let Some(db) = compile_db {
-        if let Some(args) = compile_args_for(db, source) {
+        if let Some(args) = db.args_for(source) {
             for arg in args {
                 cmd.arg(arg);
             }
@@ -308,12 +310,12 @@ fn emit_ast(
 fn extdef_entries(
     extdef: &str,
     source: &Path,
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
 ) -> Result<Vec<(String, PathBuf)>> {
     let mut cmd = Command::new(extdef);
     if let Some(db) = compile_db {
-        cmd.arg("-p").arg(db);
+        cmd.arg("-p").arg(db.path());
     }
     cmd.arg(source);
     if compile_db.is_none() {
@@ -360,58 +362,6 @@ fn ast_relative_path(source: &Path) -> PathBuf {
         None => "ast".to_string(),
     });
     rel
-}
-
-/// Compilation flags for one file from a compile database, minus the pieces
-/// that make no sense when re-driving the compiler (`-c`, `-o <obj>`, and the
-/// input file itself).
-pub fn compile_args_for(db_dir: &Path, source: &Path) -> Option<Vec<String>> {
-    let path = if db_dir.is_dir() {
-        db_dir.join("compile_commands.json")
-    } else {
-        db_dir.to_path_buf()
-    };
-    let text = std::fs::read_to_string(path).ok()?;
-    let entries: serde_json::Value = serde_json::from_str(&text).ok()?;
-
-    for entry in entries.as_array()? {
-        let file = entry.get("file")?.as_str()?;
-        if Path::new(file) != source {
-            continue;
-        }
-
-        let raw: Vec<String> = match entry.get("command").and_then(|c| c.as_str()) {
-            Some(command) => command.split_whitespace().map(String::from).collect(),
-            None => entry
-                .get("arguments")?
-                .as_array()?
-                .iter()
-                .filter_map(|a| a.as_str().map(String::from))
-                .collect(),
-        };
-
-        let mut args = Vec::new();
-        let mut skip_next = false;
-        for (i, arg) in raw.iter().enumerate() {
-            if i == 0 || skip_next {
-                skip_next = false;
-                continue; // the compiler binary, or an -o operand
-            }
-            if arg == "-c" {
-                continue;
-            }
-            if arg == "-o" {
-                skip_next = true;
-                continue;
-            }
-            if arg == file || arg.ends_with(".o") {
-                continue;
-            }
-            args.push(arg.clone());
-        }
-        return Some(args);
-    }
-    None
 }
 
 #[cfg(test)]
