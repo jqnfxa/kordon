@@ -31,7 +31,7 @@ positions** (`(CWE, file, line)`), 104 excluded as false positives. Parsed to
 | CWE | recall | | CWE | recall |
 |---|---|---|---|---|
 | 563 | 46/49 (94%) | | 119 | 16/59 (27%) |
-| 191 | 49/52 (94%) † | | 401 | 9/66 (14%) |
+| 191 | 49/52 (94%) † | | 401 | 9/66 — mostly FP, see below |
 | 190 | 17/19 (89%) ‡ | | 763/415 | 0/5 |
 | 457 | 17/19 (89%) | | 369 | 2/3 |
 | 476 | 5/7 (71%) | | 416 | 1/1 |
@@ -64,6 +64,36 @@ that was files outside the build, not broken code.
 Kordon now equals CodeChecker's best profile on recall, while deduping and
 CWE-mapping. CodeChecker emitted 42 `UninitializedObject` reports for 2 distinct
 defects (`vector.cpp:15` reported 41×, once per constructing TU).
+
+## CWE-401 is mostly the reference tool's false positives
+
+Confirmed with the codebase author. The 66 recorded CWE-401 positions are not
+66 defects: nearly all sit at a closing brace, the scope exit of an unrelated
+function that merely held a `Matrix` or `Vector` local. Nothing in those
+functions is wrong. They are the classic RAII false positive CLAUDE.md predicts
+— a tool that cannot pair `new` in a constructor with `delete` in a destructor
+and flags it anyway.
+
+**So Kordon's low CWE-401 recall is largely correct behaviour, not a gap.**
+Chasing it would mean reproducing another tool's false positives. Read the
+numbers accordingly:
+
+| metric | value |
+|---|---|
+| headline recall | 162/280 = **57.9%** |
+| recall excluding CWE-401 | 153/214 = **71.5%** |
+
+What Kordon reports instead is the *cause*: `kordon-manual-ownership-flag`
+matches a `delete` of a pointer member gated on a bool member — 5 findings on
+the broken tree, **0 on the corrected tree**, where the fix deleted the flag and
+moved ownership into a member smart pointer. Five actionable class-level
+findings replace 66 unactionable site reports, and fixing them removes all 66.
+
+This will not move a line-keyed recall score, because the ground truth records
+effects and the check finds causes. That is a property of the measurement.
+
+**Remaining non-401 misses: 61, of which CWE-119 is 43 (70%).** That is now the
+whole game, and it is precisely what abstract interpretation addresses.
 
 ## Specificity: always test against fixed code
 
