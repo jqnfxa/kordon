@@ -6,7 +6,7 @@ Session notes. Where things stand and what to pick up next.
 
 `kordon <dir> [-p <build-dir>] [--ctu]` — walks a directory, runs cppcheck +
 clang-tidy (+ Clang SA under CTU), maps every finding to a CWE, merges what the
-engines agree on, and reports the gaps. 54 tests green.
+engines agree on, and reports the gaps. 60 tests green.
 
 | Piece | File | Notes |
 |---|---|---|
@@ -17,6 +17,7 @@ engines agree on, and reports the gaps. 54 tests green.
 | CTU analyzer | `src/tools/clang_sa.rs` | `clang --analyze`, `plist-multi-file` |
 | Report | `src/report.rs` | confidence-tiered, explicit coverage gaps |
 | Compile database | `src/compile_db.rs` | parsed once; decides which files are in the build |
+| Kordon's own checks | `src/tools/clang_query.rs` | AST matchers via clang-query; CWE-191 |
 
 ## Measured results
 
@@ -24,20 +25,19 @@ Ground truth: `/home/shard/VsCode/acl/report/problems.md` — **280 confirmed
 positions** (`(CWE, file, line)`), 104 excluded as false positives. Parsed to
 `tmp/confirmed.json`. Raw list is 714 records → 384 unique.
 
-**Full ACL tree**, current: **96/280 = 34.3%** (`tmp/acl_ctu.json`, 12m14s,
-274 units analyzed + 212 skipped as not-in-build, CTU on).
-Excluding CWE-191, which is statically unreachable: **96/228 = 42%**.
+**Full ACL tree**, current: **145/280 = 51.8%** (`tmp/acl_q.json`, 12m19s,
+274 units analyzed + 212 skipped as not-in-build, CTU + kordon-query on).
 
 | CWE | recall | | CWE | recall |
 |---|---|---|---|---|
 | 563 | 46/49 (94%) | | 119 | 16/59 (27%) |
-| 457 | 17/19 (89%) | | 401 | 9/66 (14%) |
-| 476 | 5/7 (71%) | | 190 | 0/19 |
-| 416 | 1/1 | | 191 | 0/52 |
-| 369 | 2/3 | | 763/415 | 0/5 |
+| 191 | 49/52 (**94%**) | | 401 | 9/66 (14%) |
+| 457 | 17/19 (89%) | | 190 | 0/19 |
+| 476 | 5/7 (71%) | | 763/415 | 0/5 |
+| 416 | 1/1 | | 369 | 2/3 |
 
-History: 11.4% (no compile db) -> 24.6% (db) -> 34.3% (CTU + checks
-re-enabled + build-membership filter). Older logs `tmp/acl_log.txt`,
+History: 11.4% (no compile db) -> 24.6% (db) -> 34.3% (CTU + checks re-enabled
++ build-membership filter) -> 51.8% (kordon-query CWE-191 check). Older logs `tmp/acl_log.txt`,
 `tmp/acl_log_db.txt` predate all three and understate badly.
 
 Compile failures are now **5 of 274**, down from 159 of 486 — almost all of
@@ -87,10 +87,12 @@ defects (`vector.cpp:15` reported 41×, once per constructing TU).
    Genuine failures: 5 of 274. Note the old "misses are in unanalyzed files"
    proxy is no longer valid — with 5 failures, essentially all 184 remaining
    misses are real analysis gaps.
-3. **CWE-191 (52 positions) is 0% and will stay 0%** under any static config.
-   Unsigned wraparound is not UB; only `-fsanitize=unsigned-integer-overflow`
-   catches it. Needs the dynamic layer, or the custom unsigned-subtraction
-   check. Do not spend time tuning static checkers for this.
+3. ~~CWE-191 is 0% and will stay 0%.~~ **Done — 49/52 (94%)** via
+   `kordon-unsigned-subtraction`, a clang-query AST matcher
+   (`src/tools/clang_query.rs`). Permanently low confidence: no layer resolves
+   intent, the sanitizer included (it flags a correct FNV-1a hash). Next for
+   this class is IKOS, which can close the two guard shapes the matcher
+   cannot see (early return, guarded call) because they need dataflow.
 4. **CWE-401 is 9/66 and is now the biggest addressable class** (57 misses).
    Confirmed to be the manual-ownership-flag RAII pattern: `clear()` frees only
    `if (m_data && m_flgAllocMemory)`, so a wrong flag skips the free —

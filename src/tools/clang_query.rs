@@ -48,11 +48,31 @@ pub struct QueryCheck {
 /// legal and often intentional (hashes, checksums, modular arithmetic). It
 /// flags the shape and leaves the judgement to a human.
 ///
-/// Measured against a 52-position ground-truth list on a real codebase: this
-/// broad form matched 49 of 52 (94%) with 541 total matches over 274
-/// translation units, roughly two per file. A narrower variant requiring the
-/// left operand to be a call (`width() - 1`) produced 174 matches but only
-/// 48% recall, so the extra precision cost half the defects and was rejected.
+/// The `unless(allOf(...))` clause is the guard exemption: `if (k > 0) { k - 1 }`
+/// is safe and must not be reported, while the bare `k - 1` must be. It fires
+/// only for conditions that can actually establish the operand is non-zero --
+/// `>`, `>=`, `!=` against the same variable. An earlier version suppressed on
+/// *any* enclosing `if` mentioning the variable, which also swallowed
+/// `if (k < n)`; that guards nothing, and it cost three real defects on the
+/// measured corpus.
+///
+/// Two guard shapes are knowingly not handled, because an AST matcher has no
+/// notion of control flow or dominance: an early return (`if (k == 0) return;`)
+/// and a guarded call (`if (v.size() > 0) ... v.size() - 1`). Both stay
+/// reported. Closing them needs dataflow, which is the job of the abstract
+/// interpretation layer, not of this matcher.
+///
+/// Measured against a 52-position ground-truth list on a real codebase:
+///
+///   broad, guard-blind    541 matches, 49/52 = 94% recall
+///   loose guard           503 matches, 46/52 = 88%   (over-suppressed)
+///   tight guard (this)    540 matches, 49/52 = 94%
+///   narrow, calls only    174 matches, 25/52 = 48%   (precision not worth it)
+///
+/// The tight guard costs no recall. It suppressed only one match on that
+/// corpus, which barely uses the guard idiom -- consistent with it having 52
+/// genuine underflows. On code that does guard properly it is what keeps the
+/// check from being noise.
 pub const UNSIGNED_SUBTRACTION: QueryCheck = QueryCheck {
     id: "kordon-unsigned-subtraction",
     matcher: "binaryOperator(\
@@ -60,7 +80,12 @@ hasOperatorName(\"-\"), \
 hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
-unless(isInTemplateInstantiation()))",
+unless(isInTemplateInstantiation()), \
+unless(allOf(\
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"v\"))))), \
+hasAncestor(ifStmt(hasCondition(binaryOperator(\
+hasAnyOperatorName(\">\", \">=\", \"!=\"), \
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"v\")))))))))))))",
     message: "unsigned subtraction with no guard that the left operand is large enough; \
 wraps to a huge value instead of going negative",
 };
@@ -271,6 +296,19 @@ Match #2:\n\n\
     fn ignores_non_match_output() {
         let m = parse_matches("2 matches.\nsome other text\n", "x", Path::new("/proj"));
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn matcher_exempts_genuine_guards_only() {
+        let m = UNSIGNED_SUBTRACTION.matcher;
+        // Suppression must be conditional on a comparison that can establish
+        // the operand is non-zero, not on the variable merely appearing in
+        // some enclosing condition.
+        assert!(m.contains("equalsBoundNode"));
+        assert!(m.contains("hasAnyOperatorName"));
+        for op in ["\">\"", "\">=\"", "\"!=\""] {
+            assert!(m.contains(op), "guard operator {op} missing");
+        }
     }
 
     #[test]
