@@ -6,7 +6,7 @@ Session notes. Where things stand and what to pick up next.
 
 `kordon <dir> [-p <build-dir>] [--ctu]` — walks a directory, runs cppcheck +
 clang-tidy (+ Clang SA under CTU), maps every finding to a CWE, merges what the
-engines agree on, and reports the gaps. 50 tests green.
+engines agree on, and reports the gaps. 54 tests green.
 
 | Piece | File | Notes |
 |---|---|---|
@@ -16,6 +16,7 @@ engines agree on, and reports the gaps. 50 tests green.
 | CTU index + call graph | `src/ctu.rs` | AST serialization + extdef map; edges from analyzer imports |
 | CTU analyzer | `src/tools/clang_sa.rs` | `clang --analyze`, `plist-multi-file` |
 | Report | `src/report.rs` | confidence-tiered, explicit coverage gaps |
+| Compile database | `src/compile_db.rs` | parsed once; decides which files are in the build |
 
 ## Measured results
 
@@ -79,8 +80,7 @@ defects (`vector.cpp:15` reported 41×, once per constructing TU).
 
 ## Next steps, roughly in order
 
-1. **Re-run the full ACL tree** with CTU + the re-enabled checks. The 24.6%
-   figure is stale; math went 17% → 39% from the same change.
+1. ~~Re-run the full ACL tree with CTU.~~ **Done** — 34.3%, see above.
 2. ~~Fix the 159/486 failing TUs.~~ **Done.** They were 212 sources absent from
    `compile_commands.json` (186 under `tests/`), compiled with no flags. Kordon
    now analyzes only what the build compiles and reports the rest as skipped.
