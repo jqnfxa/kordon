@@ -75,7 +75,30 @@ Yes, but not the kind originally assumed. Nearly every "hard" sub-problem in thi
 
 What does *not* need new code: the symbolic execution engine (Clang SA), CTU orchestration (CodeChecker), abstract interpretation (IKOS), sanitizer instrumentation (LLVM compiler-rt), Rule-of-Five checking (clang-tidy already has it). Kordon's job is gluing these together correctly, filling the specific identified gaps, and presenting one coherent, honestly-scoped, CWE-mapped report — not reimplementing program analysis theory.
 
+## Ground truth measured while building (2026-08-17) — don't re-derive
+
+Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`), license switched **MIT → Apache 2.0** (LICENSE + NOTICE in place). Two engines wired up, `cargo test` green, `kordon <dir>` works end to end.
+
+**Tool output formats (clang 18 / cppcheck 2.13):**
+- **clang-tidy has no SARIF export.** Only structured output is `--export-fixes` YAML, which despite the name lists *all* diagnostics, not just fixable ones. It locates them by **byte offset**, not line:col — hence `src/offsets.rs`. It reports **no CWE at all**, which is why the mapping table is mandatory rather than a nicety.
+- **cppcheck emits `cwe=` natively but frequently the *parent* class.** Verified: `operatorEqToSelf` → claims 398, is 416; `containerOutOfBounds` → claims 398, is 119; `deallocret` → claims 672, is 416. Taking the attribute at face value silently drops real findings out of scope. Override list ported into `data/cwe_map.toml`.
+- One check id covers several defect classes: `unix.Malloc` is leak + UAF + double-free + free-of-non-heap. Mapping rules therefore discriminate on **message substring**, not check id alone.
+- cppcheck `--enable=all` is wrong for this purpose — it adds `information` and `unusedFunction` noise. Use `warning,style,portability`.
+
+**The escape-sink trap in test fixtures (measured both ways):** a sanitizer needs the allocated pointer to escape the function or the optimizer deletes the allocation at -O1; a static analyzer needs it to *not* escape, because once written to an opaque global both Clang SA and cppcheck conclude ownership transferred and stop reporting the leak. Adding one `sink = p;` line silently removes the `unix.Malloc` and `memleak` findings. **One fixture function cannot serve both layers** — leak cases must exist in `_static` and `_runtime` form.
+
+**`optin.cplusplus.UninitializedObject` is the checker for the CWE-665 constructor case**, and it has two gotchas:
+- It is **not included in `clang-analyzer-*`** — `optin.*` checkers must be named explicitly. Now in Kordon's `DEFAULT_CHECKS`.
+- It only fires when the constructor's **call site is in the same TU**. Same file: reports the exact field (`uninitialized field 'this->m_owns'`). Split header/.cpp: reports nothing even when enabled. This is the concrete, measured cost of not having CTU — `testdata/uninit_owner/` is the fixture, kept deliberately failing until CTU lands.
+
+**Check families that are mapped but off by default:** `cppcoreguidelines-owning-memory` and `pro-bounds-*` fire once per raw pointer / subscript / cast. On the test corpus they produced 8 low-confidence CWE-401/119 findings that buried the single genuine leak. Mappings retained so opting in still yields classified results.
+
+**Prior art to reuse, not re-derive:** `/home/shard/VsCode/acl/` holds a working shell+Python prototype of this exact pipeline (`scripts/cwe_summary.py`, `run-cppcheck.sh`, `run-codechecker.sh`, `analysis/cwe_map.json`) plus a 714-finding report from a real run. Two ideas ported: the curated cppcheck override list, and `--require-cwe` selftesting (a config regression is indistinguishable from clean code unless you assert what *must* be found). Cross-tool dedup was **absent** there — it is Kordon's actual value-add. **ACL itself has no LICENSE file: treat as proprietary.** `analysis/repro/*.cpp` quote real ACL source in comments and must not be copied into this repo; `cwe_probe.cpp` is synthetic and safe to adapt. ACL is intended later as an *external* validation target — run Kordon on it and diff against the existing report.
+
 ## Open questions for next session
+- **CTU via CodeChecker is the highest-value next step** — it is the measured blocker for the whole fallible-init class (`testdata/uninit_owner/`). CodeChecker is not installed on this machine (`pip install codechecker` in a venv).
+- **CWE-762 vs 763 for `unix.MismatchedDeallocator`.** Kordon maps it to 762 (literally "mismatched memory management routines"); prior ACL work mapped it to 763 because their requirements list named 763. Both are in the catalog. Confirm which the requirements actually want.
+- Dedup is keyed on `file + line + CWE`, so two engines reporting one defect on *adjacent* lines stay separate (seen: clang-analyzer flags a dead store at the initialization line, cppcheck at the overwrite line). Consider a small line window.
 - Licensing review of IKOS's NASA Open Source Agreement before committing to embed it.
 - Whether the CWE-191 unsigned-subtraction-without-guard check needs to be written from scratch (LLVM patch D71607 was found via search but not confirmed merged/shipped).
 - Concrete design of the per-class ownership-summary pass (data structure, how it's computed, how it plugs into Clang SA's checker API).
