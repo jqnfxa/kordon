@@ -25,19 +25,28 @@ Ground truth: `/home/shard/VsCode/acl/report/problems.md` — **280 confirmed
 positions** (`(CWE, file, line)`), 104 excluded as false positives. Parsed to
 `tmp/confirmed.json`. Raw list is 714 records → 384 unique.
 
-**Full ACL tree**, current: **145/280 = 51.8%** (`tmp/acl_q.json`, 12m19s,
+**Full ACL tree**, current: **162/280 = 57.9%** (`tmp/cov_raw.json`, ~12 min,
 274 units analyzed + 212 skipped as not-in-build, CTU + kordon-query on).
 
 | CWE | recall | | CWE | recall |
 |---|---|---|---|---|
 | 563 | 46/49 (94%) | | 119 | 16/59 (27%) |
-| 191 | 49/52 (**94%**) | | 401 | 9/66 (14%) |
-| 457 | 17/19 (89%) | | 190 | 0/19 |
-| 476 | 5/7 (71%) | | 763/415 | 0/5 |
-| 416 | 1/1 | | 369 | 2/3 |
+| 191 | 49/52 (94%) † | | 401 | 9/66 (14%) |
+| 190 | 17/19 (89%) ‡ | | 763/415 | 0/5 |
+| 457 | 17/19 (89%) | | 369 | 2/3 |
+| 476 | 5/7 (71%) | | 416 | 1/1 |
+
+† specificity verified against `acl_fix` — corrected sites go quiet.
+‡ specificity **not** verified: reports fixed code identically to broken code,
+because the fix idiom is a precondition validated by an early throw. Treat as
+"can overflow if unvalidated", not "is unvalidated".
+
+A full `acl_fix` run was in progress when this was written; when
+`tmp/cov_fix.json` completes, compare per-CWE finding counts against
+`tmp/cov_raw.json` (counts, not line numbers — the fixes shift lines).
 
 History: 11.4% (no compile db) -> 24.6% (db) -> 34.3% (CTU + checks re-enabled
-+ build-membership filter) -> 51.8% (kordon-query CWE-191 check). Older logs `tmp/acl_log.txt`,
++ build-membership filter) -> 51.8% (CWE-191 check) -> 57.9% (CWE-190 check). Older logs `tmp/acl_log.txt`,
 `tmp/acl_log_db.txt` predate all three and understate badly.
 
 Compile failures are now **5 of 274**, down from 159 of 486 — almost all of
@@ -149,6 +158,48 @@ dataflow fact. Treat CWE-190 findings as "can overflow if unvalidated", not as
    already handles both.
 7. Dedup is line-exact; two engines reporting one defect on adjacent lines stay
    separate. Consider a small line window.
+
+## To explore next: macros and other hiders
+
+Partially measured, and the open half matters more than the closed half.
+
+**What already works.** Analysis runs on the post-preprocessing AST, so a defect
+inside a macro body *is* found, and it is reported at the **expansion site**,
+not the macro definition — so the location is actionable. A macro expanded in
+three places yields three separate findings, one per use site; they are not
+collapsed. Clang SA sees through macros too (verified: use-after-free through a
+`FREE_IT(p)` macro is reported).
+
+**The hard blind spot: `#ifdef`.** Code in an inactive configuration is not in
+the AST at all, so nothing can see it. Verified: a `k - 1` under
+`#ifdef ENABLE_LEGACY_PATH` gives 5 matches without the define and 6 with it.
+ACL has 272 `#if`-family directives and 30 function-like macros. Its analyzed
+build defines `INIT_QT5`, `INIT_ZLIB`, `INIT_LIBJPEG/PNG/TIFF/WEBP` — but
+**not** `INIT_LIBBPG`, `USE_OPENCV` or `NUMBERTURN`, so all code behind those is
+permanently invisible to every engine. Whatever configuration
+`compile_commands.json` captured is the only one analyzed.
+
+**Untested, and the real question:** C-style defines that hide *declarations*,
+*conditions* and *control flow* rather than expressions. Specifically:
+
+- A guard written as a macro — `#define CHECK_POSITIVE(x) if ((x) == 0) return`.
+  The guard exemptions in `clang_query.rs` match on AST shape; post-expansion
+  the shape should still be there, but this has not been verified.
+- A macro that hides control flow entirely, like ACL's `ACL_THROW`. This is not
+  hypothetical: it is exactly what guards the CWE-190 sites in `acl_fix`.
+- Macros that declare variables (`#define DECL_SIZE size_t n = compute()`), so
+  the declaration and its use have different apparent origins.
+- Location reporting when the macro is defined in a header and expanded in many
+  `.cpp` files — does dedup keyed on `file+line+CWE` behave sensibly?
+- One line expanding a macro several times: dedup is keyed on line, so several
+  distinct defects on one line may collapse into one finding.
+- Token pasting and stringification, which synthesize identifiers that no
+  matcher naming a specific declaration can see.
+
+How to test: build a `testdata/macros/` fixture pairing each hider with its
+plain-code twin, and require that Kordon reports the same findings for both. Any
+divergence is a hider the analysis cannot see through. Then repeat against
+`acl_fix` for the `ACL_THROW` case specifically.
 
 ## Environment
 
