@@ -270,6 +270,56 @@ CWE-191 recall after the fix is unchanged at 49/52 = 94%.
 **Lesson worth keeping: a corpus can only falsify what it happens to contain.**
 Paired synthetic fixtures test the axis directly; corpus measurements cannot.
 
+## Prerequisites for IKOS and for sanitizers — scoped
+
+Both need Kordon to *drive a build*, which it has never done: today it consumes
+someone else's `compile_commands.json`. That is the shared piece of work.
+
+### IKOS — everything checked, nothing blocking
+
+IKOS v3.5 requires **LLVM/Clang 14.0.x** and cannot use 18. APRON is optional.
+
+| need | status |
+|---|---|
+| `clang-14`, `llvm-14-dev`, `libclang-14-dev` | available via apt, coexists with 18 |
+| gmp, boost, sqlite3, tbb, mpfr, cmake, python3 | already installed |
+| `libppl-dev` | available; only needed for polyhedra |
+| IKOS itself | source build, cmake, no package |
+
+Input pipeline is already proven: emitting bitcode from the existing compile db
+works (`clang++ -emit-llvm -c -g -O0` + the db's flags), and `llvm-link` merges
+per-TU bitcode into one whole-program module — which gives **cross-TU analysis
+at IR level for free**, cleaner than the AST-based CTU we built.
+
+Two things that will bite if missed:
+- Bitcode must be produced by **clang-14**, not 18 — LLVM 14 cannot read 18 bitcode.
+- Use `-O0`. Measured: at `-O1` clang folded `n - 1` into the address computation
+  (`getelementptr ... i64 -1`) and the debug info collapsed to a single line,
+  losing the line the subtraction was written on. Optimization erases the
+  expressions we want to report.
+
+IR keeps `!DILocation(line:, column:)`, so IR-level findings map back to source
+positions and fit the existing finding schema.
+
+### Sanitizers — viable, with one hard part
+
+| need | status |
+|---|---|
+| runnable tests | **11 ctest tests exist and the binaries run** |
+| dependency libs | built `.so` resolves everything, 0 missing |
+| `_GLIBCXX_ASSERTIONS` | already in the build's `-D` flags — needed for the `vector::operator[]` CWE-119 class |
+| conan | **missing**, cache empty — but all include paths resolve, so a rebuild looks plausible without it |
+
+Separate build trees are required: ASan+UBSan combine (plus
+`-fsanitize=unsigned-integer-overflow` for CWE-191), MSan does not — and MSan
+additionally needs every dependency instrumented, which is the hard part.
+
+Also needed: an ignorelist for intentional wraparound, or the CWE-191 sanitizer
+will flag correct code (verified: it reports a textbook FNV-1a hash).
+
+**Ceiling to check first:** sanitizers only see what those 11 tests execute.
+Measure line coverage before expecting much from this layer.
+
 ## Environment
 
 - CodeChecker 6.28.2 at `~/.venv/codechecker/bin/CodeChecker` (add to PATH).
