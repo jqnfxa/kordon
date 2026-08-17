@@ -1,0 +1,741 @@
+# Kordon curated tool-check -> CWE mapping table.
+#
+# Two sections:
+#   [[cwe]]   catalog: id -> human name + Kordon scope tier.
+#             tier 1 = in scope (generic memory/value-safety). See CLAUDE.md.
+#             tier 2 = injection/taint class, explicitly out of scope.
+#             tier 3 = authorization / web-specific, explicitly out of scope.
+#             tier 0 = style / code-quality indicators, not a defect class we claim.
+#
+#   [[rule]]  tool + native check id -> CWE.
+#             `message_contains` discriminates checks that cover several defect
+#             classes under one id (clang-analyzer-unix.Malloc is leak AND
+#             use-after-free AND double-free). Rules carrying `message_contains`
+#             are tried before the bare fallback rule for the same check.
+#
+#             `confidence` overrides the per-tool default. Use `low` when the
+#             check flags a *risk pattern* rather than a proven defect --
+#             cppcoreguidelines-special-member-functions is the canonical case:
+#             a missing copy ctor on an owning class is a latent double-free,
+#             not an observed one.
+
+# ---------------------------------------------------------------- CWE catalog
+
+# Bounds / OOB (CWE-119 class)
+[[cwe]]
+id = 119
+name = "Improper Restriction of Operations within the Bounds of a Memory Buffer"
+tier = 1
+
+[[cwe]]
+id = 120
+name = "Buffer Copy without Checking Size of Input (Classic Buffer Overflow)"
+tier = 1
+
+[[cwe]]
+id = 125
+name = "Out-of-bounds Read"
+tier = 1
+
+[[cwe]]
+id = 129
+name = "Improper Validation of Array Index"
+tier = 1
+
+[[cwe]]
+id = 131
+name = "Incorrect Calculation of Buffer Size"
+tier = 1
+
+[[cwe]]
+id = 787
+name = "Out-of-bounds Write"
+tier = 1
+
+[[cwe]]
+id = 788
+name = "Access of Memory Location After End of Buffer"
+tier = 1
+
+# Use-after-free / double-free / dangling
+[[cwe]]
+id = 415
+name = "Double Free"
+tier = 1
+
+[[cwe]]
+id = 416
+name = "Use After Free"
+tier = 1
+
+[[cwe]]
+id = 562
+name = "Return of Stack Variable Address"
+tier = 1
+
+[[cwe]]
+id = 590
+name = "Free of Memory not on the Heap"
+tier = 1
+
+[[cwe]]
+id = 672
+name = "Operation on a Resource after Expiration or Release"
+tier = 1
+
+[[cwe]]
+id = 762
+name = "Mismatched Memory Management Routines"
+tier = 1
+
+# Sibling of 762. Prior ACL work mapped unix.MismatchedDeallocator here because
+# its requirements list named 763; Kordon maps that checker to 762, which is
+# what it literally detects (new[]/free() mismatch). 763 stays in the catalog
+# for findings that really are "free of a pointer that was never the block
+# start". Open question -- confirm which the requirements actually want.
+[[cwe]]
+id = 763
+name = "Release of Invalid Pointer or Reference"
+tier = 1
+
+[[cwe]]
+id = 825
+name = "Expired Pointer Dereference"
+tier = 1
+
+# Uninitialized reads
+[[cwe]]
+id = 457
+name = "Use of Uninitialized Variable"
+tier = 1
+
+[[cwe]]
+id = 665
+name = "Improper Initialization"
+tier = 1
+
+[[cwe]]
+id = 824
+name = "Access of Uninitialized Pointer"
+tier = 1
+
+[[cwe]]
+id = 908
+name = "Use of Uninitialized Resource"
+tier = 1
+
+# Integer over/underflow
+[[cwe]]
+id = 190
+name = "Integer Overflow or Wraparound"
+tier = 1
+
+[[cwe]]
+id = 191
+name = "Integer Underflow (Wrap or Wraparound)"
+tier = 1
+
+[[cwe]]
+id = 197
+name = "Numeric Truncation Error"
+tier = 1
+
+[[cwe]]
+id = 680
+name = "Integer Overflow to Buffer Overflow"
+tier = 1
+
+# Resource leaks
+[[cwe]]
+id = 401
+name = "Missing Release of Memory after Effective Lifetime"
+tier = 1
+
+[[cwe]]
+id = 772
+name = "Missing Release of Resource after Effective Lifetime"
+tier = 1
+
+# Null deref and the fallible-init chain (see CLAUDE.md)
+[[cwe]]
+id = 252
+name = "Unchecked Return Value"
+tier = 1
+
+[[cwe]]
+id = 476
+name = "NULL Pointer Dereference"
+tier = 1
+
+[[cwe]]
+id = 690
+name = "Unchecked Return Value to NULL Pointer Dereference"
+tier = 1
+
+# Misc tier 1
+[[cwe]]
+id = 369
+name = "Divide By Zero"
+tier = 1
+
+[[cwe]]
+id = 563
+name = "Assignment to Variable without Use (Dead Store)"
+tier = 1
+
+[[cwe]]
+id = 843
+name = "Access of Resource Using Incompatible Type (Type Confusion)"
+tier = 1
+
+# Seen in tool output, deliberately not claimed as Kordon defect classes
+[[cwe]]
+id = 170
+name = "Improper Null Termination"
+tier = 1
+
+[[cwe]]
+id = 398
+name = "Indicator of Poor Code Quality"
+tier = 0
+
+[[cwe]]
+id = 561
+name = "Dead Code"
+tier = 0
+
+[[cwe]]
+id = 682
+name = "Incorrect Calculation"
+tier = 0
+
+[[cwe]]
+id = 704
+name = "Incorrect Type Conversion or Cast"
+tier = 0
+
+[[cwe]]
+id = 758
+name = "Reliance on Undefined, Unspecified, or Implementation-Defined Behavior"
+tier = 0
+
+# ------------------------------------------------- clang-tidy: Clang Analyzer
+# Path-sensitive symbolic execution. Highest-confidence static source we have.
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.Malloc"
+message_contains = "after it is freed"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.Malloc"
+message_contains = "Attempt to free released memory"
+cwe = 415
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.Malloc"
+message_contains = "not memory allocated by"
+cwe = 590
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.Malloc"
+cwe = 401
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.MismatchedDeallocator"
+cwe = 762
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.MallocSizeof"
+cwe = 131
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.NewDelete"
+message_contains = "after it is freed"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.NewDelete"
+message_contains = "Attempt to free released memory"
+cwe = 415
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.NewDelete"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.NewDeleteLeaks"
+cwe = 401
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.InnerPointer"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-cplusplus.Move"
+cwe = 672
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.NullDereference"
+cwe = 476
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.NonNullParamChecker"
+cwe = 476
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.DivideZero"
+cwe = 369
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.StackAddressEscape"
+cwe = 562
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.VLASize"
+cwe = 129
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.uninitialized.Assign"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.uninitialized.Branch"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.uninitialized.UndefReturn"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.uninitialized.ArraySubscript"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.uninitialized.CapturedBlockVariable"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.UndefinedBinaryOperatorResult"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-core.CallAndMessage"
+cwe = 457
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.cstring.OutOfBounds"
+cwe = 119
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-unix.cstring.NullArg"
+cwe = 476
+confidence = "high"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-security.insecureAPI.strcpy"
+cwe = 120
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-security.insecureAPI.gets"
+cwe = 120
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-deadcode.DeadStores"
+cwe = 563
+confidence = "high"
+
+# --------------------------------------------------- clang-tidy: bugprone-*
+# AST-matcher level. Real defects, but no path sensitivity behind them.
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-use-after-move"
+cwe = 672
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-dangling-handle"
+cwe = 416
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-undefined-memory-manipulation"
+cwe = 119
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-not-null-terminated-result"
+cwe = 170
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-string-constructor"
+cwe = 125
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-suspicious-memset-usage"
+cwe = 665
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-unchecked-optional-access"
+cwe = 476
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-sizeof-expression"
+cwe = 131
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-misplaced-widening-cast"
+cwe = 190
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-too-small-loop-variable"
+cwe = 190
+confidence = "medium"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-narrowing-conversions"
+cwe = 197
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-signed-char-misuse"
+cwe = 197
+confidence = "low"
+
+# -------------------------------------------- clang-tidy: cppcoreguidelines-*
+# Mostly risk patterns, not proven defects -- hence `low` confidence.
+
+# C.21 / Rule of Five. An owning class without explicit copy control gets a
+# compiler-generated shallow copy -> two owners of one pointer -> double free.
+# Latent, not observed: low confidence by construction. See CLAUDE.md.
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-special-member-functions"
+cwe = 415
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-owning-memory"
+cwe = 401
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-init-variables"
+cwe = 457
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-narrowing-conversions"
+cwe = 197
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-pro-bounds-constant-array-index"
+cwe = 129
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-pro-bounds-pointer-arithmetic"
+cwe = 119
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-pro-bounds-array-to-pointer-decay"
+cwe = 119
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-pro-type-static-cast-downcast"
+cwe = 843
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "cppcoreguidelines-pro-type-reinterpret-cast"
+cwe = 843
+confidence = "low"
+
+# ------------------------------------------------------------------ cppcheck
+# cppcheck emits CWE ids itself, so these rules exist only to *override* a
+# native id Kordon considers wrong or too coarse. Everything else flows through
+# with cwe_source = native.
+#
+# The overrides are not cosmetic. cppcheck routinely reports the *parent* CWE:
+# `operatorEqToSelf` and `containerOutOfBounds` both come back as CWE-398
+# ("Indicator of Poor Code Quality"), and `deallocret` as CWE-672. Taking those
+# at face value silently drops real 416/119 findings out of the in-scope report.
+# This list was validated empirically against a large C++ codebase before being
+# ported here; do not trim it without re-checking against real tool output.
+
+# Bounds
+[[rule]]
+tool = "cppcheck"
+check = "containerOutOfBounds"
+cwe = 119
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "arrayIndexOutOfBounds"
+cwe = 788
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "arrayIndexOutOfBoundsCond"
+cwe = 788
+confidence = "medium"
+
+[[rule]]
+tool = "cppcheck"
+check = "bufferAccessOutOfBounds"
+cwe = 119
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "pointerOutOfBounds"
+cwe = 119
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "negativeIndex"
+cwe = 129
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "negativeMemoryAllocationSize"
+cwe = 131
+confidence = "high"
+
+# Integer
+[[rule]]
+tool = "cppcheck"
+check = "truncLongCastAssignment"
+cwe = 197
+confidence = "medium"
+
+[[rule]]
+tool = "cppcheck"
+check = "truncLongCastReturn"
+cwe = 197
+confidence = "medium"
+
+[[rule]]
+tool = "cppcheck"
+check = "shiftTooManyBits"
+cwe = 190
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "shiftTooManyBitsSigned"
+cwe = 190
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "signConversion"
+cwe = 191
+confidence = "medium"
+
+# Lifetime. cppcheck's native ids here are the least reliable of the lot.
+[[rule]]
+tool = "cppcheck"
+check = "doubleFree"
+cwe = 415
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "operatorEqToSelf"
+cwe = 416
+confidence = "medium"
+
+[[rule]]
+tool = "cppcheck"
+check = "useAfterFree"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "deallocret"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "deallocuse"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "danglingLifetime"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "invalidLifetime"
+cwe = 416
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "returnDanglingLifetime"
+cwe = 562
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "mismatchAllocDealloc"
+cwe = 762
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "autovarInvalidDeallocation"
+cwe = 590
+confidence = "high"
+
+# Uninitialized
+[[rule]]
+tool = "cppcheck"
+check = "uninitvar"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "uninitdata"
+cwe = 824
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "uninitStructMember"
+cwe = 457
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "uninitMemberVar"
+cwe = 457
+confidence = "high"
+
+# Null deref
+[[rule]]
+tool = "cppcheck"
+check = "nullPointer"
+cwe = 476
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "nullPointerRedundantCheck"
+cwe = 476
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "nullPointerDefaultArg"
+cwe = 476
+confidence = "high"
+
+# Dead store
+[[rule]]
+tool = "cppcheck"
+check = "unreadVariable"
+cwe = 563
+confidence = "high"
+
+[[rule]]
+tool = "cppcheck"
+check = "redundantAssignment"
+cwe = 563
+confidence = "medium"

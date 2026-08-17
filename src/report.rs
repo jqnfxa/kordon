@@ -1,0 +1,299 @@
+//! Report rendering.
+//!
+//! The governing rule: **a clean report must never imply coverage Kordon did
+//! not achieve.** Every way the analysis fell short -- an engine that was not
+//! installed, a translation unit that failed to compile, a check with no CWE
+//! mapping, a defect class no configured engine can see -- is stated in the
+//! report itself, not left for the reader to infer from silence.
+
+use std::collections::BTreeMap;
+
+use crate::cwe::CweTable;
+use crate::dedup::MergedFinding;
+use crate::finding::{Confidence, CweSource};
+use crate::tools::{ToolOutcome, ToolRun};
+
+pub struct Report<'a> {
+    pub runs: &'a [ToolRun],
+    pub merged: &'a [MergedFinding],
+    pub table: &'a CweTable,
+    /// Files Kordon handed to the engines.
+    pub analyzed_files: usize,
+}
+
+impl<'a> Report<'a> {
+    /// Findings whose CWE is one Kordon claims to target.
+    pub fn in_scope(&self) -> Vec<&MergedFinding> {
+        self.merged
+            .iter()
+            .filter(|m| m.primary.cwe.is_some_and(|c| self.table.in_scope(c)))
+            .collect()
+    }
+
+    /// Findings with a CWE that is deliberately outside Kordon's scope, or a
+    /// style-only indicator. Counted, not detailed.
+    pub fn out_of_scope(&self) -> Vec<&MergedFinding> {
+        self.merged
+            .iter()
+            .filter(|m| m.primary.cwe.is_some_and(|c| !self.table.in_scope(c)))
+            .collect()
+    }
+
+    /// Findings no rule could classify. These are gaps in Kordon's mapping
+    /// table, and are reported as such rather than dropped.
+    pub fn unmapped(&self) -> Vec<&MergedFinding> {
+        self.merged
+            .iter()
+            .filter(|m| m.primary.cwe_source == CweSource::Unmapped)
+            .collect()
+    }
+
+    pub fn render_text(&self, verbose: bool) -> String {
+        let mut out = String::new();
+
+        out.push_str(&self.render_engines());
+        out.push_str(&self.render_findings(verbose));
+        out.push_str(&self.render_gaps());
+        out.push_str(&self.render_caveats());
+
+        out
+    }
+
+    fn render_engines(&self) -> String {
+        let mut out = String::new();
+        out.push_str("\n═══ Engines ═══\n\n");
+
+        for run in self.runs {
+            let status = match &run.outcome {
+                ToolOutcome::Ran => format!("ok, {} raw findings", run.findings.len()),
+                ToolOutcome::Skipped(why) => format!("SKIPPED — {why}"),
+                ToolOutcome::Failed(why) => format!("FAILED — {why}"),
+            };
+            out.push_str(&format!("  {:<14} {}\n", run.tool.as_str(), status));
+            for note in &run.notes {
+                out.push_str(&format!("  {:<14} note: {}\n", "", note));
+            }
+        }
+
+        out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
+        out
+    }
+
+    fn render_findings(&self, verbose: bool) -> String {
+        let in_scope = self.in_scope();
+        let mut out = String::new();
+
+        out.push_str("\n═══ In-scope findings ═══\n\n");
+
+        if in_scope.is_empty() {
+            out.push_str("  none\n");
+            return out;
+        }
+
+        // Group by CWE so a reviewer sees defect classes, not a flat list.
+        let mut by_cwe: BTreeMap<u32, Vec<&MergedFinding>> = BTreeMap::new();
+        for m in &in_scope {
+            by_cwe.entry(m.primary.cwe.unwrap()).or_default().push(m);
+        }
+
+        for (cwe, group) in &by_cwe {
+            let name = self.table.name_of(*cwe).unwrap_or("(unnamed)");
+            out.push_str(&format!("  CWE-{cwe}  {name}  [{}]\n", group.len()));
+
+            for m in group {
+                let f = &m.primary;
+                let corroboration = if m.agreement() > 1 {
+                    format!(" ({} engines agree)", m.agreement())
+                } else {
+                    String::new()
+                };
+
+                out.push_str(&format!(
+                    "    {}:{}:{}  {}{}\n",
+                    f.file.display(),
+                    f.line,
+                    f.column,
+                    confidence_tag(m.confidence),
+                    corroboration,
+                ));
+                out.push_str(&format!("      {}\n", f.message));
+                out.push_str(&format!(
+                    "      via {} [{}]\n",
+                    m.tools().join(" + "),
+                    f.native_id
+                ));
+
+                if verbose {
+                    for event in &f.events {
+                        out.push_str(&format!(
+                            "        ↳ {}:{}  {}\n",
+                            event.file.display(),
+                            event.line,
+                            event.message
+                        ));
+                    }
+                }
+                out.push('\n');
+            }
+        }
+
+        let total: usize = by_cwe.values().map(|g| g.len()).sum();
+        out.push_str(&format!(
+            "  {total} defect(s) across {} CWE class(es)\n",
+            by_cwe.len()
+        ));
+        out
+    }
+
+    /// Everything Kordon knows it did not cover. This section is the point of
+    /// the report as much as the findings are.
+    fn render_gaps(&self) -> String {
+        let mut out = String::new();
+        out.push_str("\n═══ Coverage gaps ═══\n\n");
+
+        let out_of_scope = self.out_of_scope();
+        if !out_of_scope.is_empty() {
+            let mut by_cwe: BTreeMap<u32, usize> = BTreeMap::new();
+            for m in &out_of_scope {
+                *by_cwe.entry(m.primary.cwe.unwrap()).or_default() += 1;
+            }
+            out.push_str(&format!(
+                "  {} finding(s) outside Kordon's target scope, not detailed:\n",
+                out_of_scope.len()
+            ));
+            for (cwe, count) in by_cwe {
+                let name = self.table.name_of(cwe).unwrap_or("(unnamed)");
+                out.push_str(&format!("    CWE-{cwe:<6} {count:>4}  {name}\n"));
+            }
+            out.push('\n');
+        }
+
+        let unmapped = self.unmapped();
+        if !unmapped.is_empty() {
+            let mut by_check: BTreeMap<String, usize> = BTreeMap::new();
+            for m in &unmapped {
+                *by_check.entry(m.primary.native_id.clone()).or_default() += 1;
+            }
+            out.push_str(&format!(
+                "  {} finding(s) from checks with no CWE mapping — these are gaps in\n  \
+                 data/cwe_map.toml, not clean results:\n",
+                unmapped.len()
+            ));
+            for (check, count) in by_check {
+                out.push_str(&format!("    {count:>4}  {check}\n"));
+            }
+            out.push('\n');
+        }
+
+        let missing: Vec<_> = self.runs.iter().filter(|r| !r.ran()).collect();
+        if !missing.is_empty() {
+            out.push_str(
+                "  Engines that did not run — their defect classes were NOT checked:\n",
+            );
+            for run in missing {
+                out.push_str(&format!("    {}\n", run.tool.as_str()));
+            }
+            out.push('\n');
+        }
+
+        if out_of_scope.is_empty() && unmapped.is_empty() {
+            out.push_str("  no unclassified findings\n\n");
+        }
+
+        out
+    }
+
+    /// Limits that hold even on a completely clean run.
+    fn render_caveats(&self) -> String {
+        let mut out = String::new();
+        out.push_str("═══ What this report does not cover ═══\n\n");
+        out.push_str(
+            "  • Single translation unit only. Cross-TU (CTU) analysis is not wired up\n    \
+             yet, so any function defined in another .cpp is opaque to the analyzer.\n",
+        );
+        out.push_str(
+            "  • Static analysis only. No sanitizer run, so bounds/UAF/overflow defects\n    \
+             that depend on runtime values are unproven either way.\n",
+        );
+        out.push_str(
+            "  • No sound absence proof. Nothing here says the code IS safe; only that\n    \
+             these engines did not flag it.\n\n",
+        );
+        out
+    }
+
+    /// Machine-readable form, for CI and for diffing runs against each other.
+    pub fn render_json(&self) -> serde_json::Value {
+        let findings: Vec<_> = self
+            .merged
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "cwe": m.primary.cwe,
+                    "cwe_name": m.primary.cwe.and_then(|c| self.table.name_of(c)),
+                    "cwe_source": m.primary.cwe_source.to_string(),
+                    "in_scope": m.primary.cwe.is_some_and(|c| self.table.in_scope(c)),
+                    "file": m.primary.file,
+                    "line": m.primary.line,
+                    "column": m.primary.column,
+                    "severity": m.severity().to_string(),
+                    "confidence": m.confidence.to_string(),
+                    "message": m.primary.message,
+                    "tools": m.tools(),
+                    "agreement": m.agreement(),
+                    "native_ids": std::iter::once(&m.primary)
+                        .chain(m.others.iter())
+                        .map(|f| f.native_id.clone())
+                        .collect::<Vec<_>>(),
+                    "events": m.primary.events,
+                })
+            })
+            .collect();
+
+        let engines: Vec<_> = self
+            .runs
+            .iter()
+            .map(|run| {
+                let (status, detail) = match &run.outcome {
+                    ToolOutcome::Ran => ("ran", None),
+                    ToolOutcome::Skipped(why) => ("skipped", Some(why.clone())),
+                    ToolOutcome::Failed(why) => ("failed", Some(why.clone())),
+                };
+                serde_json::json!({
+                    "tool": run.tool.as_str(),
+                    "status": status,
+                    "detail": detail,
+                    "raw_findings": run.findings.len(),
+                    "notes": run.notes,
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "kordon_version": env!("CARGO_PKG_VERSION"),
+            "analyzed_files": self.analyzed_files,
+            "engines": engines,
+            "findings": findings,
+            "summary": {
+                "in_scope": self.in_scope().len(),
+                "out_of_scope": self.out_of_scope().len(),
+                "unmapped": self.unmapped().len(),
+            },
+            // Machine-readable form of the caveats section, so CI cannot treat
+            // an empty finding list as proof of safety.
+            "coverage_caveats": [
+                "single-translation-unit analysis only; CTU not enabled",
+                "static analysis only; no sanitizer or dynamic evidence",
+                "absence of findings is not a proof of absence of defects",
+            ],
+        })
+    }
+}
+
+fn confidence_tag(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::High => "confidence: high",
+        Confidence::Medium => "confidence: medium",
+        Confidence::Low => "confidence: low",
+    }
+}
