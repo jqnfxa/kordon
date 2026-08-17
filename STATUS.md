@@ -23,9 +23,24 @@ Ground truth: `/home/shard/VsCode/acl/report/problems.md` — **280 confirmed
 positions** (`(CWE, file, line)`), 104 excluded as false positives. Parsed to
 `tmp/confirmed.json`. Raw list is 714 records → 384 unique.
 
-**Full ACL tree** (486 files, with retargeted compile db): 69/280 = **24.6%**.
-Logs: `tmp/acl_log.txt` (no db), `tmp/acl_log_db.txt` (with db). This predates
-the check re-enable below, so it understates current recall.
+**Full ACL tree**, current: **96/280 = 34.3%** (`tmp/acl_ctu.json`, 12m14s,
+274 units analyzed + 212 skipped as not-in-build, CTU on).
+Excluding CWE-191, which is statically unreachable: **96/228 = 42%**.
+
+| CWE | recall | | CWE | recall |
+|---|---|---|---|---|
+| 563 | 46/49 (94%) | | 119 | 16/59 (27%) |
+| 457 | 17/19 (89%) | | 401 | 9/66 (14%) |
+| 476 | 5/7 (71%) | | 190 | 0/19 |
+| 416 | 1/1 | | 191 | 0/52 |
+| 369 | 2/3 | | 763/415 | 0/5 |
+
+History: 11.4% (no compile db) -> 24.6% (db) -> 34.3% (CTU + checks
+re-enabled + build-membership filter). Older logs `tmp/acl_log.txt`,
+`tmp/acl_log_db.txt` predate all three and understate badly.
+
+Compile failures are now **5 of 274**, down from 159 of 486 — almost all of
+that was files outside the build, not broken code.
 
 **modules/math subset** (22 TUs, 75 confirmed positions):
 
@@ -66,18 +81,26 @@ defects (`vector.cpp:15` reported 41×, once per constructing TU).
 
 1. **Re-run the full ACL tree** with CTU + the re-enabled checks. The 24.6%
    figure is stale; math went 17% → 39% from the same change.
-2. **Fix the 159/486 TUs that fail to compile.** 148 of 211 full-tree misses
-   were in files Clang SA never analyzed — the single biggest lever, and it is a
-   build-config problem, not an analysis one. The retargeted db came from the
-   main `acl/` tree, so some failures may be flag mismatch rather than real.
+2. ~~Fix the 159/486 failing TUs.~~ **Done.** They were 212 sources absent from
+   `compile_commands.json` (186 under `tests/`), compiled with no flags. Kordon
+   now analyzes only what the build compiles and reports the rest as skipped.
+   Genuine failures: 5 of 274. Note the old "misses are in unanalyzed files"
+   proxy is no longer valid — with 5 failures, essentially all 184 remaining
+   misses are real analysis gaps.
 3. **CWE-191 (52 positions) is 0% and will stay 0%** under any static config.
    Unsigned wraparound is not UB; only `-fsanitize=unsigned-integer-overflow`
    catches it. Needs the dynamic layer, or the custom unsigned-subtraction
    check. Do not spend time tuning static checkers for this.
-4. **CWE-401 is 7/35 even at best.** The ownership-flag RAII pattern. Needs the
-   per-class ownership summary from CLAUDE.md, not more inlining.
-5. **CWE-119 is 11/27.** Remaining ones are `vector::operator[]` where proving
-   the container can be empty needs interprocedural range reasoning.
+4. **CWE-401 is 9/66 and is now the biggest addressable class** (57 misses).
+   Confirmed to be the manual-ownership-flag RAII pattern: `clear()` frees only
+   `if (m_data && m_flgAllocMemory)`, so a wrong flag skips the free —
+   the mirror image of the uninitialized-flag defect. `matrix.cpp:41` is the
+   destructor itself. Needs the per-class ownership summary from CLAUDE.md
+   (which raw-pointer members own, where they are released, when release can be
+   skipped). Not reachable by more inlining.
+5. **CWE-119 is 16/59** (43 misses), up from 0. Remaining are
+   `vector::operator[]` where proving the container can be empty needs
+   interprocedural range reasoning.
 6. Ingest CodeChecker output as an alternative runner — its cppcheck
    integration prefixes ids (`cppcheck-arrayIndexOutOfBounds`) and its clangsa
    ids are bare (`core.NullDereference`); the table's tool-independent fallback
