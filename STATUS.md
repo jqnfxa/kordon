@@ -159,47 +159,49 @@ dataflow fact. Treat CWE-190 findings as "can overflow if unvalidated", not as
 7. Dedup is line-exact; two engines reporting one defect on adjacent lines stay
    separate. Consider a small line window.
 
-## To explore next: macros and other hiders
+## Macros and other hiders — measured
 
-Partially measured, and the open half matters more than the closed half.
+`testdata/macros/hiders.cpp` pairs every macro form with a plain-code twin and
+requires the same verdict for both. **All pairs match.** Analysis runs on the
+post-preprocessing AST, so macros are transparent:
 
-**What already works.** Analysis runs on the post-preprocessing AST, so a defect
-inside a macro body *is* found, and it is reported at the **expansion site**,
-not the macro definition — so the location is actionable. A macro expanded in
-three places yields three separate findings, one per use site; they are not
-collapsed. Clang SA sees through macros too (verified: use-after-free through a
-`FREE_IT(p)` macro is reported).
+| hider | result |
+|---|---|
+| defect inside a macro body | flagged, at the **expansion site** not the `#define` |
+| guard written as a macro (`IF_POSITIVE(k) {...}`) | correctly suppressed |
+| only the comparison in a macro (`if (IS_POSITIVE(k))`) | correctly suppressed |
+| macro-declared variable | flagged, same as plain |
+| macro-generated member function | flagged, at expansion site |
+| one macro expanded 3× | 3 separate findings, not collapsed |
+| guard + control flow in a macro (`THROW_IF`) | flagged — same as its plain twin, so no regression |
 
-**The hard blind spot: `#ifdef`.** Code in an inactive configuration is not in
-the AST at all, so nothing can see it. Verified: a `k - 1` under
-`#ifdef ENABLE_LEGACY_PATH` gives 5 matches without the define and 6 with it.
-ACL has 272 `#if`-family directives and 30 function-like macros. Its analyzed
-build defines `INIT_QT5`, `INIT_ZLIB`, `INIT_LIBJPEG/PNG/TIFF/WEBP` — but
-**not** `INIT_LIBBPG`, `USE_OPENCV` or `NUMBERTURN`, so all code behind those is
-permanently invisible to every engine. Whatever configuration
-`compile_commands.json` captured is the only one analyzed.
+Clang SA is equally transparent (use-after-free through a `FREE_IT(p)` macro is
+reported normally).
 
-**Untested, and the real question:** C-style defines that hide *declarations*,
-*conditions* and *control flow* rather than expressions. Specifically:
+**The real blind spot is `#ifdef`, not macros.** Code in an inactive
+configuration never reaches the AST, so no engine can see it and no check
+improvement will change that. Verified: `k - 1` under `#ifdef` gives 5 matches
+without the define and 6 with it. ACL has 272 `#if`-family directives; its
+analyzed build defines `INIT_QT5`, `INIT_ZLIB`, `INIT_LIBJPEG/PNG/TIFF/WEBP`
+but **not** `INIT_LIBBPG`, `USE_OPENCV` or `NUMBERTURN`. Everything behind those
+is permanently invisible. The only fix is to analyze each configuration as a
+separate run and merge — worth doing, and not yet done.
 
-- A guard written as a macro — `#define CHECK_POSITIVE(x) if ((x) == 0) return`.
-  The guard exemptions in `clang_query.rs` match on AST shape; post-expansion
-  the shape should still be there, but this has not been verified.
-- A macro that hides control flow entirely, like ACL's `ACL_THROW`. This is not
-  hypothetical: it is exactly what guards the CWE-190 sites in `acl_fix`.
-- Macros that declare variables (`#define DECL_SIZE size_t n = compute()`), so
-  the declaration and its use have different apparent origins.
-- Location reporting when the macro is defined in a header and expanded in many
-  `.cpp` files — does dedup keyed on `file+line+CWE` behave sensibly?
-- One line expanding a macro several times: dedup is keyed on line, so several
-  distinct defects on one line may collapse into one finding.
-- Token pasting and stringification, which synthesize identifiers that no
-  matcher naming a specific declaration can see.
+### The bug this fixture caught
 
-How to test: build a `testdata/macros/` fixture pairing each hider with its
-plain-code twin, and require that Kordon reports the same findings for both. Any
-divergence is a hider the analysis cannot see through. Then repeat against
-`acl_fix` for the `ACL_THROW` case specifically.
+Building it exposed a live regression that no ACL measurement could reveal. The
+guard exemption had stopped matching a bare `if (k > 0)`: the condition matcher
+was `hasCondition(hasDescendant(cmp))`, and `hasDescendant` does not match the
+node itself. Only the nested form `if (a && k > 0)` still worked — and ACL uses
+only that form, so recall, specificity and the raw-vs-fix comparison all looked
+clean while the common case was broken.
+
+Now `anyOf(cmp, hasDescendant(cmp))`, with a regression test on both arms, and
+guards built from an operand descriptor rather than three hand-written copies.
+CWE-191 recall after the fix is unchanged at 49/52 = 94%.
+
+**Lesson worth keeping: a corpus can only falsify what it happens to contain.**
+Paired synthetic fixtures test the axis directly; corpus measurements cannot.
 
 ## Environment
 
