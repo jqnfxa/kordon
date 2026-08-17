@@ -58,7 +58,8 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Show findings whose CWE is outside Kordon's target scope.
+    /// Detail every finding, including low-confidence risk-pattern checks that
+    /// are otherwise only counted and summarized.
     #[arg(long)]
     all: bool,
 
@@ -164,6 +165,7 @@ fn main() -> Result<()> {
             cli.compile_db.as_deref(),
             &extra,
             tools::clang_tidy::DEFAULT_CHECKS,
+            cli.jobs,
             &table,
         ));
     }
@@ -187,7 +189,7 @@ fn main() -> Result<()> {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report.render_json())?);
     } else {
-        print!("{}", report.render_text(cli.verbose));
+        print!("{}", report.render_text(cli.verbose, cli.all));
     }
 
     if let Some(required) = &cli.require_cwe {

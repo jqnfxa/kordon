@@ -48,11 +48,11 @@ impl<'a> Report<'a> {
             .collect()
     }
 
-    pub fn render_text(&self, verbose: bool) -> String {
+    pub fn render_text(&self, verbose: bool, show_all: bool) -> String {
         let mut out = String::new();
 
         out.push_str(&self.render_engines());
-        out.push_str(&self.render_findings(verbose));
+        out.push_str(&self.render_findings(verbose, show_all));
         out.push_str(&self.render_gaps());
         out.push_str(&self.render_caveats());
 
@@ -79,7 +79,7 @@ impl<'a> Report<'a> {
         out
     }
 
-    fn render_findings(&self, verbose: bool) -> String {
+    fn render_findings(&self, verbose: bool, show_all: bool) -> String {
         let in_scope = self.in_scope();
         let mut out = String::new();
 
@@ -90,10 +90,21 @@ impl<'a> Report<'a> {
             return out;
         }
 
+        // Split by confidence before grouping. Low-confidence findings come
+        // from checks that flag a risky *shape* rather than a proven defect;
+        // they fire once per raw pointer, cast or uninitialized declaration and
+        // on a real codebase outnumber the path-sensitive results by an order
+        // of magnitude. Measured on a 486-file tree: 1543 of 1802 in-scope
+        // findings came from three such checks, burying seven analyzer
+        // results. They are counted and summarized below, never dropped.
+        let (substantive, risk_patterns): (Vec<&MergedFinding>, Vec<&MergedFinding>) = in_scope
+            .into_iter()
+            .partition(|m| m.confidence > Confidence::Low || show_all);
+
         // Group by CWE so a reviewer sees defect classes, not a flat list.
         let mut by_cwe: BTreeMap<u32, Vec<&MergedFinding>> = BTreeMap::new();
-        for m in &in_scope {
-            by_cwe.entry(m.primary.cwe.unwrap()).or_default().push(m);
+        for m in &substantive {
+            by_cwe.entry(m.primary.cwe.unwrap()).or_default().push(*m);
         }
 
         for (cwe, group) in &by_cwe {
@@ -138,10 +149,30 @@ impl<'a> Report<'a> {
         }
 
         let total: usize = by_cwe.values().map(|g| g.len()).sum();
+        if total == 0 {
+            out.push_str("  none above low confidence\n");
+        }
         out.push_str(&format!(
             "  {total} defect(s) across {} CWE class(es)\n",
             by_cwe.len()
         ));
+
+        if !risk_patterns.is_empty() {
+            let mut by_check: BTreeMap<String, usize> = BTreeMap::new();
+            for m in &risk_patterns {
+                *by_check.entry(m.primary.native_id.clone()).or_default() += 1;
+            }
+            out.push_str(&format!(
+                "\n  Plus {} low-confidence finding(s) from risk-pattern checks, not detailed.\n  \
+                 These flag a shape that *can* become the defect, not one that was proven.\n  \
+                 Re-run with --all to list them:\n",
+                risk_patterns.len()
+            ));
+            for (check, count) in by_check {
+                out.push_str(&format!("    {count:>6}  {check}\n"));
+            }
+        }
+
         out
     }
 

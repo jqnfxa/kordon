@@ -70,3 +70,6 @@ Testing/
 
 # Rust
 /target
+
+# local analysis output
+/tmp
