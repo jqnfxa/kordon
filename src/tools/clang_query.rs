@@ -27,10 +27,70 @@ pub fn tool() -> Tool {
 pub struct QueryCheck {
     /// Reported as the native check id. `kordon-` marks it as our own.
     pub id: &'static str,
-    pub matcher: &'static str,
+    /// The matcher body, without its closing parenthesis, so guard clauses can
+    /// be appended. Kept split because the guards are the part that changes:
+    /// each one exempts a way of writing "I already checked this".
+    pub base: &'static str,
+    /// Clauses wrapped in `unless(...)` and appended to `base`.
+    pub guards: &'static [&'static str],
     /// Shown in the finding message.
     pub message: &'static str,
 }
+
+impl QueryCheck {
+    pub fn matcher(&self) -> String {
+        let mut m = String::from(self.base);
+        for guard in self.guards {
+            m.push_str(", unless(");
+            m.push_str(guard);
+            m.push(')');
+        }
+        m.push(')');
+        m
+    }
+}
+
+
+/// A condition that can establish the operand is non-zero: `>`, `>=` or `!=`.
+/// Deliberately not `<` or `==` -- `if (k < n)` guards nothing, and an earlier
+/// version that suppressed on any enclosing condition mentioning the operand
+/// swallowed three real defects on the measured corpus.
+/// Guard on a plain variable: `if (k > 0) { ... k - 1 ... }`.
+const GUARD_VAR: &str = "allOf(\
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"v\"))))), \
+hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
+hasAnyOperatorName(\">\", \">=\", \"!=\"), \
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"v\"))))))))))))";
+
+/// Guard on a method call over a local: `if (v.size() > 0) { ... v.size() - 1 }`.
+///
+/// `equalsBoundNode` on the two call expressions themselves would not work --
+/// they are distinct AST nodes. The identity that matters is *same method on
+/// same object*, so the callee and the object are bound separately.
+const GUARD_CALL_ON_VAR: &str = "allOf(\
+hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
+callee(cxxMethodDecl().bind(\"m\")), \
+on(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"o\")))))))), \
+hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
+hasAnyOperatorName(\">\", \">=\", \"!=\"), \
+hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
+callee(cxxMethodDecl(equalsBoundNode(\"m\"))), \
+on(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"o\")))))))))))))))";
+
+/// Guard on a method call over a member: `if (dataIn.width() > 0) { ... }`.
+///
+/// This one is load-bearing rather than exotic. It is how the reference
+/// codebase actually wrote its fixes, and without it the check reported the
+/// fixed code identically to the broken code.
+const GUARD_CALL_ON_MEMBER: &str = "allOf(\
+hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
+callee(cxxMethodDecl().bind(\"m2\")), \
+on(ignoringParenImpCasts(memberExpr(member(fieldDecl().bind(\"f\")))))))), \
+hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
+hasAnyOperatorName(\">\", \">=\", \"!=\"), \
+hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
+callee(cxxMethodDecl(equalsBoundNode(\"m2\"))), \
+on(ignoringParenImpCasts(memberExpr(member(fieldDecl(equalsBoundNode(\"f\")))))))))))))))";
 
 /// CWE-191, unsigned wraparound.
 ///
@@ -56,11 +116,26 @@ pub struct QueryCheck {
 /// `if (k < n)`; that guards nothing, and it cost three real defects on the
 /// measured corpus.
 ///
-/// Two guard shapes are knowingly not handled, because an AST matcher has no
-/// notion of control flow or dominance: an early return (`if (k == 0) return;`)
-/// and a guarded call (`if (v.size() > 0) ... v.size() - 1`). Both stay
-/// reported. Closing them needs dataflow, which is the job of the abstract
-/// interpretation layer, not of this matcher.
+/// Recall alone is a worthless number for a check like this, and measuring it
+/// alone was a mistake: a matcher that flagged every `unsigned - 1` would also
+/// score 94%. What matters equally is whether the check goes quiet on *fixed*
+/// code. Run against a corrected copy of the same corpus, the first version
+/// reported the fixed code identically to the broken code -- because the fix
+/// was written as `if (data.width() > 0)` on a class member, and the exemption
+/// only understood plain locals. `GUARD_CALL_ON_MEMBER` closes that, and is
+/// the reason the check distinguishes the two trees at all.
+///
+/// After it: 49/52 still flagged on the broken tree, and of the 52 positions in
+/// the fixed tree only 7 still flag -- all 7 verified byte-identical between
+/// the trees, i.e. never actually fixed. Every genuinely corrected site goes
+/// quiet.
+///
+/// One guard shape remains unreachable, and it is not a matter of adding
+/// another clause. A precondition validated by an early exit --
+/// `if (a > b) throw ...;` followed later by `b - a` -- has no containment
+/// relationship to exploit, compares a different pair of expressions than the
+/// subtraction uses, and depends on the throw not returning. That is a
+/// dataflow fact, and it belongs to the abstract-interpretation layer.
 ///
 /// Measured against a 52-position ground-truth list on a real codebase:
 ///
@@ -75,22 +150,58 @@ pub struct QueryCheck {
 /// check from being noise.
 pub const UNSIGNED_SUBTRACTION: QueryCheck = QueryCheck {
     id: "kordon-unsigned-subtraction",
-    matcher: "binaryOperator(\
-hasOperatorName(\"-\"), \
+    base: "binaryOperator(hasOperatorName(\"-\"), \
 hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
-unless(isInTemplateInstantiation()), \
-unless(allOf(\
-hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"v\"))))), \
-hasAncestor(ifStmt(hasCondition(binaryOperator(\
-hasAnyOperatorName(\">\", \">=\", \"!=\"), \
-hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"v\")))))))))))))",
+unless(isInTemplateInstantiation())",
+    guards: &[GUARD_VAR, GUARD_CALL_ON_VAR, GUARD_CALL_ON_MEMBER],
     message: "unsigned subtraction with no guard that the left operand is large enough; \
 wraps to a huge value instead of going negative",
 };
 
-pub const CHECKS: &[QueryCheck] = &[UNSIGNED_SUBTRACTION];
+/// CWE-190, integer overflow on addition.
+///
+/// The mirror of [`UNSIGNED_SUBTRACTION`], and unreachable by the same engines
+/// for the same reason: unsigned wraparound is well-defined, so no compiler may
+/// call `x + 1` erroneous. Signed overflow *is* UB and clang's default
+/// `-fsanitize=undefined` does trap it, but only at runtime on executed paths.
+///
+/// The matcher is deliberately the addition mirror rather than something more
+/// clever. Measured against the 19-position ground truth:
+///
+///   unsigned + literal (this)      463 matches, 17/19 = 89%
+///   addition whose operand is a
+///     subtraction (`a - b + 1`)    135 matches,  9/19 = 47%
+///   unsigned multiplication       1228 matches,  6/19 = 32%
+///
+/// The subtraction-then-add variant looked like the most characteristic shape
+/// -- the corpus is full of `roi.right() - roi.left() + 1` -- but it turned out
+/// to be a strict subset of this one, since that expression's right operand is
+/// still the literal 1. It was dropped as redundant.
+///
+/// Multiplication was rejected outright: 1228 further matches to gain a single
+/// defect. Overflow in a multiplication used as an allocation size is a real
+/// and dangerous class (CWE-680), but flagging every unsigned `*` is not a way
+/// to find it. That needs the size-argument context, and is better left to the
+/// abstract-interpretation layer which can bound the operands.
+///
+/// No guard exemption, unlike the subtraction check. `x + 1` overflows only
+/// when `x` is at the type maximum, and code effectively never guards that
+/// explicitly, so there is no idiom to exempt.
+pub const UNSIGNED_ADDITION: QueryCheck = QueryCheck {
+    id: "kordon-unsigned-addition",
+    base: "binaryOperator(hasOperatorName(\"+\"), \
+hasType(isUnsignedInteger()), \
+hasRHS(ignoringParenImpCasts(integerLiteral())), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation())",
+    guards: &[],
+    message: "unsigned addition with no check that the left operand is below the type maximum; \
+wraps to a small value instead of growing",
+};
+
+pub const CHECKS: &[QueryCheck] = &[UNSIGNED_SUBTRACTION, UNSIGNED_ADDITION];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
 pub fn find_binary() -> Option<String> {
@@ -207,7 +318,7 @@ fn run_one(
     root: &Path,
 ) -> Vec<RawMatch> {
     let mut cmd = Command::new(binary);
-    cmd.arg("-c").arg(format!("match {}", check.matcher));
+    cmd.arg("-c").arg(format!("match {}", check.matcher()));
 
     if let Some(db) = compile_db {
         cmd.arg("-p").arg(db.path());
@@ -300,7 +411,7 @@ Match #2:\n\n\
 
     #[test]
     fn matcher_exempts_genuine_guards_only() {
-        let m = UNSIGNED_SUBTRACTION.matcher;
+        let m = UNSIGNED_SUBTRACTION.matcher();
         // Suppression must be conditional on a comparison that can establish
         // the operand is non-zero, not on the variable merely appearing in
         // some enclosing condition.
@@ -315,8 +426,8 @@ Match #2:\n\n\
     fn matcher_excludes_system_headers_and_instantiations() {
         // Both guards are load-bearing: without them the matcher reports
         // libstdc++ internals and template recursion base cases.
-        assert!(UNSIGNED_SUBTRACTION.matcher.contains("isExpansionInSystemHeader"));
-        assert!(UNSIGNED_SUBTRACTION.matcher.contains("isInTemplateInstantiation"));
+        assert!(UNSIGNED_SUBTRACTION.matcher().contains("isExpansionInSystemHeader"));
+        assert!(UNSIGNED_SUBTRACTION.matcher().contains("isInTemplateInstantiation"));
     }
 
     #[test]

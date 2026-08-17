@@ -565,6 +565,22 @@ check = "kordon-unsigned-subtraction"
 cwe = 191
 confidence = "low"
 
+# CWE-190. Mirror of the subtraction check above and unreachable for the same
+# reason. Multiplication was measured and deliberately excluded: flagging every
+# unsigned `*` cost 1228 extra matches to gain one defect.
+#
+# Specificity caveat, measured: on a corrected copy of the reference corpus this
+# check reports the fixed code identically to the broken code. The fix idiom
+# there is a precondition validated with an early throw --
+# `if (roi.left() > roi.right()) ACL_THROW(...);` before `right() - left() + 1`
+# -- which no AST matcher can see. Treat CWE-190 findings as "this expression
+# can overflow if unvalidated", not as "this is unvalidated".
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unsigned-addition"
+cwe = 190
+confidence = "low"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through

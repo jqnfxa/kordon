@@ -99,3 +99,78 @@ std::size_t guarded_call(const std::vector<int> &items)
 }
 
 }  // namespace kordon_probe
+
+// ---------------------------------------------------------------- CWE-190
+//
+// The mirror class: addition that wraps past the type maximum instead of
+// growing. Same detection story as the subtraction above -- unsigned overflow
+// is well-defined, so no compiler calls it erroneous.
+//
+// The characteristic real-world shape is an inclusive extent computed as
+// `end - begin + 1`. When the subtraction already underflowed, the `+ 1`
+// turns SIZE_MAX into 0, and a loop bounded by it runs zero times instead of
+// once -- silently producing an empty result rather than crashing.
+
+namespace kordon_probe {
+
+struct Roi {
+    std::size_t left() const;
+    std::size_t right() const;
+};
+
+// `right() - left()` underflows when right < left, then + 1 wraps to zero.
+std::size_t inclusive_width(const Roi &roi)
+{
+    return roi.right() - roi.left() + 1;
+}
+
+// A loop bound built the same way: if the bound wraps to 0 the body never
+// runs, which is a silent wrong answer rather than a crash.
+std::size_t count_columns(const Roi &roi)
+{
+    std::size_t n = 0;
+    for (std::size_t x = roi.left(); x < roi.right() + 1; ++x) {
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace kordon_probe
+
+// -------------------------------------------------- guard on a class member
+//
+// This is how the reference codebase actually wrote its fixes, and it is the
+// case that decides whether the check is useful at all: before the member
+// guard was understood, the check reported corrected code identically to the
+// broken code, which makes a high recall number meaningless.
+
+namespace kordon_probe {
+
+class Frame {
+public:
+    void build();
+private:
+    Roi m_roi;
+    std::size_t m_width = 0;
+};
+
+void Frame::build()
+{
+    // Guarded via a member's accessor -- must NOT be flagged.
+    if (m_roi.right() > 0) {
+        consume(m_roi.right() - 1);
+    }
+}
+
+// Precondition validated by an early throw. Safe, but still reported: the
+// subtraction is not inside the guard, the guard compares a different pair,
+// and it relies on the throw not returning. Needs dataflow, not matching.
+std::size_t validated_extent(const Roi &roi)
+{
+    if (roi.left() > roi.right()) {
+        throw "bad roi";
+    }
+    return roi.right() - roi.left() + 1;
+}
+
+}  // namespace kordon_probe

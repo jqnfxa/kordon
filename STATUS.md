@@ -56,6 +56,43 @@ Kordon now equals CodeChecker's best profile on recall, while deduping and
 CWE-mapping. CodeChecker emitted 42 `UninitializedObject` reports for 2 distinct
 defects (`vector.cpp:15` reported 41×, once per constructing TU).
 
+## Specificity: always test against fixed code
+
+`acl_fix/` is a corrected copy of `acl_raw/` and is the only way to tell a
+detector from a shape-counter. Compile db: `tmp/db-fix`.
+
+The first CWE-191 matcher scored 94% recall and reported **the fixed code
+identically to the broken code** — because the fix was
+`if (dataIn.width() > 0)` on a class *member*, and the guard exemption only
+understood plain locals. Recall alone would have hidden that completely: a
+matcher flagging every `unsigned - 1` scores 94% too.
+
+After adding the member-call guard, on the 52 CWE-191 positions:
+
+| tree | flagged |
+|---|---|
+| `acl_raw` | 49/52 (recall preserved) |
+| `acl_fix` | 7/52 — and all 7 verified byte-identical between trees, i.e. never fixed |
+
+So specificity is effectively 100% on that sample.
+
+**CWE-190 has not cleared this bar.** Its fix idiom is a precondition validated
+by an early throw:
+
+```cpp
+if ((roi.left() > roi.right()) || roi.right() > header._width)
+    ACL_THROW(bad_option, "Check bounds for ROI, X dimension");
+...
+rsz._xSize = roi.right() - roi.left() + 1;   // now safe
+```
+
+The expression is byte-identical in both trees (19 occurrences each), so the
+check reports fixed code identically to broken code. No AST matcher can close
+this: the subtraction is not inside the guard, the guard compares a different
+pair of expressions, and it depends on the throw not returning. It is a
+dataflow fact. Treat CWE-190 findings as "can overflow if unvalidated", not as
+"is unvalidated" — and this is the concrete argument for IKOS.
+
 ## Things learned the hard way — do not re-derive
 
 - **clang-tidy has no SARIF** (LLVM 18). `--export-fixes` YAML uses *byte
@@ -77,6 +114,9 @@ defects (`vector.cpp:15` reported 41×, once per constructing TU).
 - **Fixture leak cases need `_static` and `_runtime` forms.** A sanitizer needs
   the pointer to escape; a static analyzer needs it not to.
 - AST JSON is not viable for a call graph: **176 MB for one ACL file**.
+- **Recall without specificity is meaningless.** Always run a new check against
+  `acl_fix/` as well as `acl_raw/`; a check that cannot tell them apart is
+  counting syntax, not finding defects.
 
 ## Next steps, roughly in order
 
