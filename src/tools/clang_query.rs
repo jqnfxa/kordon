@@ -31,8 +31,10 @@ pub struct QueryCheck {
     /// be appended. Kept split because the guards are the part that changes:
     /// each one exempts a way of writing "I already checked this".
     pub base: &'static str,
-    /// Clauses wrapped in `unless(...)` and appended to `base`.
-    pub guards: &'static [&'static str],
+    /// Whether to append the guard exemptions. Only the subtraction check
+    /// wants them: `x + 1` overflows only at the type maximum, which code
+    /// effectively never guards explicitly, so there is no idiom to exempt.
+    pub guarded: bool,
     /// Shown in the finding message.
     pub message: &'static str,
 }
@@ -40,10 +42,12 @@ pub struct QueryCheck {
 impl QueryCheck {
     pub fn matcher(&self) -> String {
         let mut m = String::from(self.base);
-        for guard in self.guards {
-            m.push_str(", unless(");
-            m.push_str(guard);
-            m.push(')');
+        if self.guarded {
+            for shape in GUARD_SHAPES {
+                m.push_str(", unless(");
+                m.push_str(&guard_clause(shape));
+                m.push(')');
+            }
         }
         m.push(')');
         m
@@ -51,46 +55,76 @@ impl QueryCheck {
 }
 
 
-/// A condition that can establish the operand is non-zero: `>`, `>=` or `!=`.
-/// Deliberately not `<` or `==` -- `if (k < n)` guards nothing, and an earlier
-/// version that suppressed on any enclosing condition mentioning the operand
-/// swallowed three real defects on the measured corpus.
-/// Guard on a plain variable: `if (k > 0) { ... k - 1 ... }`.
-const GUARD_VAR: &str = "allOf(\
-hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"v\"))))), \
-hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
-hasAnyOperatorName(\">\", \">=\", \"!=\"), \
-hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"v\"))))))))))))";
-
-/// Guard on a method call over a local: `if (v.size() > 0) { ... v.size() - 1 }`.
+/// One guard: an operand shape plus the same shape written as a back-reference.
 ///
-/// `equalsBoundNode` on the two call expressions themselves would not work --
-/// they are distinct AST nodes. The identity that matters is *same method on
-/// same object*, so the callee and the object are bound separately.
-const GUARD_CALL_ON_VAR: &str = "allOf(\
-hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
-callee(cxxMethodDecl().bind(\"m\")), \
-on(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"o\")))))))), \
-hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
-hasAnyOperatorName(\">\", \">=\", \"!=\"), \
-hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
-callee(cxxMethodDecl(equalsBoundNode(\"m\"))), \
-on(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"o\")))))))))))))))";
+/// Guards are built rather than spelled out because the two halves must stay in
+/// lockstep -- the bound form and the `equalsBoundNode` form differ by a few
+/// tokens, and keeping three hand-written copies balanced across nine nesting
+/// levels is how the `hasDescendant` bug below got in unnoticed.
+struct GuardShape {
+    /// Matches the subtraction's left operand and binds its parts.
+    operand: &'static str,
+    /// Matches the same thing again, by back-reference, in the condition.
+    back_reference: &'static str,
+}
 
-/// Guard on a method call over a member: `if (dataIn.width() > 0) { ... }`.
+/// Plain variable: `if (k > 0) { ... k - 1 ... }`.
+const SHAPE_VAR: GuardShape = GuardShape {
+    operand: "declRefExpr(to(varDecl().bind(\"v\")))",
+    back_reference: "declRefExpr(to(varDecl(equalsBoundNode(\"v\"))))",
+};
+
+/// Method call on a local: `if (v.size() > 0) { ... v.size() - 1 }`.
 ///
-/// This one is load-bearing rather than exotic. It is how the reference
-/// codebase actually wrote its fixes, and without it the check reported the
-/// fixed code identically to the broken code.
-const GUARD_CALL_ON_MEMBER: &str = "allOf(\
-hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
-callee(cxxMethodDecl().bind(\"m2\")), \
-on(ignoringParenImpCasts(memberExpr(member(fieldDecl().bind(\"f\")))))))), \
-hasAncestor(ifStmt(hasCondition(hasDescendant(binaryOperator(\
-hasAnyOperatorName(\">\", \">=\", \"!=\"), \
-hasLHS(ignoringParenImpCasts(cxxMemberCallExpr(\
-callee(cxxMethodDecl(equalsBoundNode(\"m2\"))), \
-on(ignoringParenImpCasts(memberExpr(member(fieldDecl(equalsBoundNode(\"f\")))))))))))))))";
+/// `equalsBoundNode` on the two call expressions would never match -- they are
+/// distinct AST nodes. The identity that matters is *same method on same
+/// object*, so callee and object are bound separately.
+const SHAPE_CALL_ON_VAR: GuardShape = GuardShape {
+    operand: "cxxMemberCallExpr(callee(cxxMethodDecl().bind(\"m\")), \
+on(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"o\"))))))",
+    back_reference: "cxxMemberCallExpr(callee(cxxMethodDecl(equalsBoundNode(\"m\"))), \
+on(ignoringParenImpCasts(declRefExpr(to(varDecl(equalsBoundNode(\"o\")))))))",
+};
+
+/// Method call on a member: `if (dataIn.width() > 0) { ... }`.
+///
+/// Load-bearing rather than exotic: it is how the reference codebase actually
+/// writes its fixes, and without it the check reported corrected code
+/// identically to broken code.
+const SHAPE_CALL_ON_MEMBER: GuardShape = GuardShape {
+    operand: "cxxMemberCallExpr(callee(cxxMethodDecl().bind(\"m2\")), \
+on(ignoringParenImpCasts(memberExpr(member(fieldDecl().bind(\"f\"))))))",
+    back_reference: "cxxMemberCallExpr(callee(cxxMethodDecl(equalsBoundNode(\"m2\"))), \
+on(ignoringParenImpCasts(memberExpr(member(fieldDecl(equalsBoundNode(\"f\")))))))",
+};
+
+const GUARD_SHAPES: &[GuardShape] = &[SHAPE_VAR, SHAPE_CALL_ON_VAR, SHAPE_CALL_ON_MEMBER];
+
+/// Build the `unless(...)` clause exempting a subtraction whose operand is
+/// already known non-zero.
+///
+/// The condition is matched as `anyOf(cmp, hasDescendant(cmp))`, and both arms
+/// are required. `hasDescendant` does **not** match the node itself, so a bare
+/// `if (k > 0)` -- where the comparison *is* the condition -- is only caught by
+/// the first arm, while `if (a.empty() && k > 0)` is only caught by the second.
+/// Using `hasDescendant` alone silently stopped exempting the simple form,
+/// which the corpus happened not to use, so the regression measured clean.
+///
+/// Only `>`, `>=` and `!=` count. `if (k < n)` establishes nothing about zero,
+/// and an earlier version that accepted any comparison swallowed three real
+/// defects.
+fn guard_clause(shape: &GuardShape) -> String {
+    let cmp = format!(
+        "binaryOperator(hasAnyOperatorName(\">\", \">=\", \"!=\"), \
+hasLHS(ignoringParenImpCasts({})))",
+        shape.back_reference
+    );
+    format!(
+        "allOf(hasLHS(ignoringParenImpCasts({})), \
+hasAncestor(ifStmt(hasCondition(anyOf({cmp}, hasDescendant({cmp}))))))",
+        shape.operand
+    )
+}
 
 /// CWE-191, unsigned wraparound.
 ///
@@ -137,6 +171,13 @@ on(ignoringParenImpCasts(memberExpr(member(fieldDecl(equalsBoundNode(\"f\"))))))
 /// subtraction uses, and depends on the throw not returning. That is a
 /// dataflow fact, and it belongs to the abstract-interpretation layer.
 ///
+/// Macros are transparent to all of this, verified with paired fixtures in
+/// `testdata/macros/`: a defect inside a macro body is flagged at the
+/// *expansion* site, a guard written as a macro still exempts, and a macro that
+/// hides only the comparison still exempts. Every macro case reports the same
+/// verdict as its plain-code twin. The genuine blind spot is `#ifdef`, which is
+/// not a macro problem at all -- inactive configurations never reach the AST.
+///
 /// Measured against a 52-position ground-truth list on a real codebase:
 ///
 ///   broad, guard-blind    541 matches, 49/52 = 94% recall
@@ -155,7 +196,7 @@ hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guards: &[GUARD_VAR, GUARD_CALL_ON_VAR, GUARD_CALL_ON_MEMBER],
+    guarded: true,
     message: "unsigned subtraction with no guard that the left operand is large enough; \
 wraps to a huge value instead of going negative",
 };
@@ -196,7 +237,7 @@ hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guards: &[],
+    guarded: false,
     message: "unsigned addition with no check that the left operand is below the type maximum; \
 wraps to a small value instead of growing",
 };
@@ -407,6 +448,24 @@ Match #2:\n\n\
     fn ignores_non_match_output() {
         let m = parse_matches("2 matches.\nsome other text\n", "x", Path::new("/proj"));
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn guard_matches_both_direct_and_nested_conditions() {
+        // Regression test for a real bug: switching the condition matcher to
+        // `hasDescendant` alone stopped exempting a bare `if (k > 0)`, because
+        // hasDescendant does not match the node itself. Only the nested form
+        // `if (a && k > 0)` kept working, and the corpus happened to use only
+        // that, so the regression measured clean. Both arms are required.
+        let m = UNSIGNED_SUBTRACTION.matcher();
+        assert!(m.contains("anyOf("), "guard must accept the condition itself");
+        assert!(m.contains("hasDescendant("), "guard must accept a nested condition");
+    }
+
+    #[test]
+    fn addition_check_has_no_guard_clauses() {
+        // `x + 1` overflows only at the type maximum; there is no guard idiom.
+        assert!(!UNSIGNED_ADDITION.matcher().contains("equalsBoundNode"));
     }
 
     #[test]

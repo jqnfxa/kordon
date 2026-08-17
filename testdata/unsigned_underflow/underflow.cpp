@@ -74,7 +74,7 @@ void guarded_at_least_one(std::size_t k)
     }
 }
 
-// ------------------------------------------------- known limits, still flagged
+// ------------------------------------------------- known limit, still flagged
 
 // An early return is a real guard, but the subtraction is not inside the `if`,
 // so a purely syntactic matcher cannot see the relationship. Reported today;
@@ -87,9 +87,9 @@ void guarded_by_early_return(std::size_t k)
     consume(k - 1);
 }
 
-// Also a real guard, also still reported: the operand is a call rather than a
-// variable, so there is no declaration to tie the condition and the
-// subtraction together.
+// Guard on a call rather than a variable. Correctly suppressed: the exemption
+// binds the callee and the object separately, since the two call expressions
+// are distinct AST nodes and comparing them directly would never match.
 std::size_t guarded_call(const std::vector<int> &items)
 {
     if (items.size() > 0) {
