@@ -365,6 +365,18 @@ check = "clang-analyzer-core.UndefinedBinaryOperatorResult"
 cwe = 457
 confidence = "high"
 
+# CWE-665, not CWE-457. The defect is not "a variable was read before being
+# written" -- it is that the constructor completed and handed back an object
+# some of whose members were never assigned. A constructor has no return value
+# to check, so its only way to signal failure is to throw; returning quietly
+# produces a zombie object that every caller is entitled to trust. 457/824 is
+# the symptom at the eventual read site, 665 is the root cause here.
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-optin.cplusplus.UninitializedObject"
+cwe = 665
+confidence = "high"
+
 [[rule]]
 tool = "clang-tidy"
 check = "clang-analyzer-core.CallAndMessage"

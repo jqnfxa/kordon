@@ -50,8 +50,17 @@ pub fn tool() -> Tool {
 /// `special-member-functions` is kept: it fires once per class, not per use,
 /// and it is the C.21 / Rule-of-Five check that catches a latent double free
 /// in an owning class -- a defect no other configured check finds.
+/// `clang-analyzer-*` does NOT include the `optin.*` checkers -- they must be
+/// named explicitly. `optin.cplusplus.UninitializedObject` is enabled here
+/// because it is the only configured check that finds a constructor leaving a
+/// member unassigned on one path, which is the root of the fallible-init
+/// defect chain (CWE-665 -> 824 -> 476/590). Measured on
+/// testdata/uninit_owner: without it that class is invisible, with it the
+/// analyzer names the exact field -- provided the constructor's call site is
+/// in the same translation unit.
 pub const DEFAULT_CHECKS: &str =
     "-*,clang-analyzer-*,bugprone-*,\
+clang-analyzer-optin.cplusplus.UninitializedObject,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions";
 
