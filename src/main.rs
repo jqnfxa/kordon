@@ -6,6 +6,7 @@
 //! every finding to a CWE, merges what the engines independently agree on,
 //! and reports honestly on what none of them covered.
 
+mod ctu;
 mod cwe;
 mod dedup;
 mod finding;
@@ -78,6 +79,19 @@ struct Cli {
     /// Deeper cppcheck value-flow analysis. Considerably slower.
     #[arg(long)]
     exhaustive: bool,
+
+    /// Enable cross-translation-unit analysis. Builds a CTU index (one
+    /// serialized AST per unit plus a definition map) and runs Clang SA over
+    /// it, so a function defined in another .cpp stops being opaque. This is
+    /// the only way to reach the fallible-constructor defect class. Costs
+    /// noticeably more time and disk.
+    #[arg(long)]
+    ctu: bool,
+
+    /// Where to keep CTU artifacts. Defaults to a temporary directory that is
+    /// removed afterwards; give a path to inspect the index.
+    #[arg(long)]
+    ctu_dir: Option<PathBuf>,
 
     /// Skip cppcheck.
     #[arg(long)]
@@ -170,6 +184,52 @@ fn main() -> Result<()> {
         ));
     }
 
+    // CTU pass. Kept separate from the clang-tidy pass because it needs its own
+    // index, its own output format, and costs far more -- so it is opt-in.
+    let ctu_scratch = cli.ctu_dir.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("kordon-ctu-{}", std::process::id()))
+    });
+
+    if cli.ctu {
+        let extra = vec![format!("-std={}", cli.std)];
+        match ctu::build_index(
+            &sources,
+            cli.compile_db.as_deref(),
+            &extra,
+            &ctu_scratch,
+            cli.jobs,
+        ) {
+            Ok(index) => {
+                eprintln!(
+                    "kordon: CTU index built — {} unit(s) indexed, {} failed, {} definitions",
+                    index.indexed.len(),
+                    index.failed.len(),
+                    index.definition_count()
+                );
+                runs.push(tools::clang_sa::run(
+                    &sources,
+                    cli.compile_db.as_deref(),
+                    &extra,
+                    &index,
+                    &ctu_scratch.join("reports"),
+                    cli.jobs,
+                    &table,
+                ));
+            }
+            Err(err) => {
+                runs.push(ToolRun::failed(
+                    tools::clang_sa::tool(),
+                    format!("could not build CTU index: {err}"),
+                ));
+            }
+        }
+    } else {
+        runs.push(ToolRun::skipped(
+            tools::clang_sa::tool(),
+            "--ctu not given; cross-TU defects are not covered",
+        ));
+    }
+
     // Only findings from engines that actually completed may enter the report.
     let raw: Vec<_> = runs
         .iter()
@@ -190,6 +250,12 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report.render_json())?);
     } else {
         print!("{}", report.render_text(cli.verbose, cli.all));
+    }
+
+    // Only clean up an index we created ourselves; an explicit --ctu-dir is
+    // the user asking to keep it.
+    if cli.ctu && cli.ctu_dir.is_none() {
+        let _ = std::fs::remove_dir_all(&ctu_scratch);
     }
 
     if let Some(required) = &cli.require_cwe {

@@ -60,10 +60,33 @@ The defect falls in the gap between the two files. This is what
 `CodeChecker analyze --ctu` exists to close, and this fixture is the concrete
 measurement of what not having it costs.
 
-## Status
+## Status: resolved by CTU
 
-This is an **expected-miss fixture**. Do not add its CWEs to `--require-cwe`
-until CTU is wired up; it is here to fail, visibly, until then.
+CTU is now implemented (`kordon --ctu`), and this fixture detects the full
+chain it was written to predict:
 
-Re-check after enabling CTU — the chain should become detectable, and this
-README should be updated with what actually changed.
+```
+$ kordon testdata/uninit_owner --ctu
+CWE-665  Improper Initialization              [2]
+  vector.cpp:45  1 uninitialized field at the end of the constructor call
+  vector.cpp:63  1 uninitialized field at the end of the constructor call
+CWE-457  Use of Uninitialized Variable        [1]
+  vector.cpp:96  Branch condition evaluates to a garbage value
+CWE-476  NULL Pointer Dereference             [1]
+  vector.cpp:115 Array access (via field 'm_data') results in a null pointer dereference
+```
+
+Both constructors are caught, plus the garbage branch in `init()` and the null
+dereference in `at()` — CWE-665 → 824 → 476 exactly as documented above.
+Without `--ctu` the same run still reports nothing but the Rule-of-Five
+warning, so this doubles as the regression test for CTU itself:
+
+```bash
+kordon testdata/uninit_owner --ctu --require-cwe 665,457,476
+```
+
+Two things had to be right for this to work, and both fail silently when
+wrong: the extdef map must point at serialized ASTs rather than sources, and
+the diagnostic format must be `plist-multi-file` — plain `plist` and the text
+format both discard any report whose path crosses a file boundary, which is
+every CTU finding.

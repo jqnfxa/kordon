@@ -64,6 +64,16 @@ pub struct CweTable {
     /// (tool, check) -> rules. Rules with `message_contains` sort first, so a
     /// linear scan naturally tries specific patterns before the fallback.
     rules: HashMap<(String, String), Vec<Rule>>,
+    /// check -> rules, ignoring which tool declared them.
+    ///
+    /// Several runners surface the same engine: `clang-analyzer-core.*` checks
+    /// arrive both from clang-tidy and from the direct CTU pass. Keying only on
+    /// (tool, check) would mean re-declaring the entire table per runner, and
+    /// getting that wrong is silent -- the findings simply come back unmapped
+    /// and vanish from the in-scope report. Check ids do not collide across the
+    /// engines Kordon drives (clang's are dotted/prefixed, cppcheck's are
+    /// camelCase), so falling back to a tool-independent lookup is safe.
+    by_check: HashMap<String, Vec<Rule>>,
 }
 
 impl CweTable {
@@ -77,11 +87,19 @@ impl CweTable {
         let catalog = raw.cwe.into_iter().map(|e| (e.id, e)).collect();
 
         let mut rules: HashMap<(String, String), Vec<Rule>> = HashMap::new();
+        let mut by_check: HashMap<String, Vec<Rule>> = HashMap::new();
         for rule in raw.rule {
+            by_check
+                .entry(rule.check.clone())
+                .or_default()
+                .push(rule.clone());
             rules
                 .entry((rule.tool.clone(), rule.check.clone()))
                 .or_default()
                 .push(rule);
+        }
+        for bucket in by_check.values_mut() {
+            bucket.sort_by_key(|r| r.message_contains.is_none());
         }
         for bucket in rules.values_mut() {
             // Specific-before-fallback. `sort_by_key` is stable, so rules that
@@ -90,7 +108,11 @@ impl CweTable {
             bucket.sort_by_key(|r| r.message_contains.is_none());
         }
 
-        Ok(CweTable { catalog, rules })
+        Ok(CweTable {
+            catalog,
+            rules,
+            by_check,
+        })
     }
 
     pub fn name_of(&self, cwe: u32) -> Option<&str> {
@@ -119,7 +141,13 @@ impl CweTable {
     ) -> Classification {
         let key = (tool.as_str().to_string(), check.to_string());
 
-        if let Some(bucket) = self.rules.get(&key) {
+        // Exact (tool, check) first, then the tool-independent fallback.
+        let bucket = self
+            .rules
+            .get(&key)
+            .or_else(|| self.by_check.get(check));
+
+        if let Some(bucket) = bucket {
             let hit = bucket.iter().find(|rule| match &rule.message_contains {
                 Some(pattern) => message.contains(pattern.as_str()),
                 None => true,

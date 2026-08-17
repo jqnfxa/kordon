@@ -9,6 +9,7 @@
 //! completely different claims and the report has to keep them apart. A clean
 //! report that silently omitted a crashed analyzer would be a lie.
 
+pub mod clang_sa;
 pub mod clang_tidy;
 pub mod cppcheck;
 
