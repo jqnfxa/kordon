@@ -39,17 +39,23 @@ pub fn tool() -> Tool {
 /// no memory-safety signal, and every unmapped check shows up as a gap in the
 /// report, so enabling them would bury the real gaps in noise.
 ///
-/// Several `cppcoreguidelines-*` checks are deliberately absent even though
-/// `data/cwe_map.toml` has entries for them. They fire once per raw pointer
-/// (`owning-memory`), per subscript (`pro-bounds-*`) or per cast
-/// (`pro-type-*`), which on the test corpus produced eight low-confidence
-/// CWE-401/119 findings that buried the single genuine leak. The mappings stay
-/// in the table so that a user who opts into those checks still gets a
-/// classified result rather than an unmapped one.
+/// `cppcoreguidelines-owning-memory` and `pro-bounds-*` are enabled despite
+/// being noisy, which corrects an earlier mistake worth recording. They were
+/// removed once because on a ten-function fixture they produced eight
+/// low-confidence findings that buried the single genuine leak. Measured later
+/// against a real module with an independent ground-truth list, those same two
+/// checks accounted for 16 of 29 matched defects -- more than half the recall,
+/// and every CWE-119 hit. Dropping them cost far more than the noise they made.
 ///
-/// `special-member-functions` is kept: it fires once per class, not per use,
-/// and it is the C.21 / Rule-of-Five check that catches a latent double free
-/// in an owning class -- a defect no other configured check finds.
+/// The noise was a reporting problem, not a check-selection problem, and it is
+/// fixed in the right place now: both are mapped at `low` confidence, so the
+/// report summarizes them by count rather than detailing them, while they still
+/// contribute findings. Judging a check by its output volume on a toy corpus
+/// was the error.
+///
+/// `special-member-functions` fires once per class, not per use, and is the
+/// C.21 / Rule-of-Five check that catches a latent double free in an owning
+/// class -- a defect no other configured check finds.
 /// `clang-analyzer-*` does NOT include the `optin.*` checkers -- they must be
 /// named explicitly. `optin.cplusplus.UninitializedObject` is enabled here
 /// because it is the only configured check that finds a constructor leaving a
@@ -62,7 +68,10 @@ pub const DEFAULT_CHECKS: &str =
     "-*,clang-analyzer-*,bugprone-*,\
 clang-analyzer-optin.cplusplus.UninitializedObject,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
-cppcoreguidelines-narrowing-conversions";
+cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
+cppcoreguidelines-pro-bounds-pointer-arithmetic,\
+cppcoreguidelines-pro-bounds-constant-array-index,\
+cppcoreguidelines-pro-bounds-array-to-pointer-decay";
 
 /// Default trust in a clang-tidy check, by family.
 ///
