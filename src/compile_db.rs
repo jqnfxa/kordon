@@ -131,8 +131,11 @@ fn parse_entry(entry: &serde_json::Value) -> Option<(PathBuf, Vec<String>)> {
 mod tests {
     use super::*;
 
-    fn db_from(json: &str) -> CompileDb {
-        let dir = std::env::temp_dir().join(format!("kordon-db-test-{}", std::process::id()));
+    /// Unique per test: the suite runs in parallel inside one process, so a
+    /// shared pid-derived path has tests truncating each other's fixture.
+    fn db_from(json: &str, tag: &str) -> CompileDb {
+        let dir = std::env::temp_dir()
+            .join(format!("kordon-db-test-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("compile_commands.json"), json).unwrap();
         CompileDb::load(&dir).unwrap()
@@ -147,7 +150,7 @@ mod tests {
 
     #[test]
     fn strips_compile_and_output_flags() {
-        let db = db_from(SAMPLE);
+        let db = db_from(SAMPLE, "strip");
         let args = db.args_for(Path::new("/src/a.cpp")).unwrap();
         assert!(args.contains(&"-DFOO".to_string()));
         assert!(args.contains(&"-I/inc".to_string()));
@@ -160,14 +163,14 @@ mod tests {
 
     #[test]
     fn supports_the_arguments_array_form() {
-        let db = db_from(SAMPLE);
+        let db = db_from(SAMPLE, "argsform");
         let args = db.args_for(Path::new("/src/b.cpp")).unwrap();
         assert_eq!(args, ["-I/other"]);
     }
 
     #[test]
     fn partitions_sources_by_build_membership() {
-        let db = db_from(SAMPLE);
+        let db = db_from(SAMPLE, "partition");
         let (built, unlisted) = db.partition(&[
             PathBuf::from("/src/a.cpp"),
             PathBuf::from("/tests/t.cpp"),
@@ -179,7 +182,7 @@ mod tests {
 
     #[test]
     fn unknown_file_has_no_flags() {
-        assert!(db_from(SAMPLE).args_for(Path::new("/nope.cpp")).is_none());
+        assert!(db_from(SAMPLE, "unknown").args_for(Path::new("/nope.cpp")).is_none());
     }
 
     #[test]

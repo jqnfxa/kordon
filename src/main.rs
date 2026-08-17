@@ -203,6 +203,30 @@ fn main() -> Result<()> {
         ));
     }
 
+    // Kordon's own AST-matcher checks. These cover classes no configured engine
+    // reaches at all, so skipping them silently would leave a gap that looks
+    // like a clean result.
+    match tools::clang_query::find_binary() {
+        Some(binary) => {
+            let extra = vec![format!("-std={}", cli.std)];
+            let root = canonical(&cli.path);
+            runs.push(tools::clang_query::run(
+                &binary,
+                &sources,
+                compile_db.as_ref(),
+                &extra,
+                &root,
+                cli.jobs,
+                &table,
+            ));
+        }
+        None => runs.push(ToolRun::skipped(
+            tools::clang_query::tool(),
+            "clang-query not found in PATH (apt install clang-tools); \
+             CWE-191 is not covered by any other engine",
+        )),
+    }
+
     // CTU pass. Kept separate from the clang-tidy pass because it needs its own
     // index, its own output format, and costs far more -- so it is opt-in.
     let ctu_scratch = cli.ctu_dir.clone().unwrap_or_else(|| {

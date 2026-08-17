@@ -548,6 +548,23 @@ check = "cppcoreguidelines-pro-type-reinterpret-cast"
 cwe = 843
 confidence = "low"
 
+# ------------------------------------------------- Kordon's own AST matchers
+# Checks with no off-the-shelf equivalent, run through clang-query. Always low
+# confidence: an AST matcher sees shape, and for these classes intent is what
+# decides whether the shape is a defect.
+
+# CWE-191. No other engine Kordon drives detects this class at all -- verified
+# against cppcheck exhaustive, clang-tidy, Clang SA with alpha.core, and both
+# compilers' warning sets, none of which flag even a constant
+# `size_t n = 0; return n - 1;`. Unsigned wraparound is well-defined C++, so
+# there is nothing for them to call erroneous. Only clang's opt-in
+# -fsanitize=unsigned-integer-overflow reports it, and only at runtime.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unsigned-subtraction"
+cwe = 191
+confidence = "low"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through
