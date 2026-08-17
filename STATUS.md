@@ -95,6 +95,43 @@ effects and the check finds causes. That is a property of the measurement.
 **Remaining non-401 misses: 61, of which CWE-119 is 43 (70%).** That is now the
 whole game, and it is precisely what abstract interpretation addresses.
 
+## The precision problem — the biggest thing left
+
+Comparing a full run on the broken tree against one on the corrected tree
+(`tmp/cov_raw.json` vs `tmp/cov_fix.json`), where ~226 defects were fixed:
+
+| tier | broken | corrected | change |
+|---|---|---|---|
+| high confidence | 227 | 195 | **-14%** |
+| medium | 13 | 12 | -8% |
+| low | 6628 | 6307 | -5% |
+
+Low confidence is **96.5% of all in-scope findings**, and it barely notices that
+the code was fixed. Broken down by check:
+
+| check | findings | change on fixed tree |
+|---|---|---|
+| `cppcoreguidelines-pro-bounds-pointer-arithmetic` | 2326 | -1% |
+| `bugprone-narrowing-conversions` | 1184 | -0% |
+| `cppcoreguidelines-init-variables` | 659 | **-33%** |
+| `pro-bounds-constant-array-index` | 534 | +0% |
+| `pro-bounds-array-to-pointer-decay` | 481 | +0% |
+| `kordon-unsigned-subtraction` | 383 | -8% |
+
+The `pro-bounds-*` family is 3341 findings — **49% of everything Kordon reports**
+— and is essentially inert: it cannot distinguish corrected code from broken
+code at all. It fires on every pointer arithmetic and every array subscript.
+
+It cannot simply be deleted, though: removing it costs 16 matched positions,
+11 of them CWE-119. That is the tension to resolve. Kordon currently emits 6868
+in-scope findings to cover 162 real positions — a 42:1 ratio. Replacing
+`pro-bounds-*` with a range-analysis answer for CWE-119 would cut roughly half
+the total volume *and* raise recall, which makes it the highest-value work left.
+
+Note what does respond: `init-variables` (-33%) and the path-sensitive analyzer
+findings. Responsiveness to fixes is a better quality signal than recall, and
+cheap to measure — always run both trees.
+
 ## Specificity: always test against fixed code
 
 `acl_fix/` is a corrected copy of `acl_raw/` and is the only way to tell a
