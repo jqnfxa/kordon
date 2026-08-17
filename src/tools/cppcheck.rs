@@ -19,11 +19,15 @@ pub fn tool() -> Tool {
     Tool::new("cppcheck")
 }
 
-/// Run cppcheck over either a compile database or a list of source files.
+/// Run cppcheck over a list of source files.
 ///
 /// `--enable=warning,style,portability` rather than `all`: `all` adds
 /// `information` and `unusedFunction`, which produce pure noise
 /// (`missingIncludeSystem` for every standard header) and no defect signal.
+///
+/// C and C++ sources are analyzed in separate invocations. Forcing
+/// `--language=c++` on a `.c` file is not merely inaccurate -- it changes what
+/// the code means, and pairs a C++ `--std` with C sources.
 pub fn run(
     binary: &str,
     sources: &[PathBuf],
@@ -32,9 +36,50 @@ pub fn run(
     exhaustive: bool,
     table: &CweTable,
 ) -> ToolRun {
+    let (c_sources, cxx_sources): (Vec<PathBuf>, Vec<PathBuf>) = sources
+        .iter()
+        .cloned()
+        .partition(|p| p.extension().and_then(|e| e.to_str()) == Some("c"));
+
+    let mut findings = Vec::new();
+    let mut notes = Vec::new();
+    for (lang, std, files) in [
+        ("c", "c11", c_sources),
+        ("c++", std, cxx_sources),
+    ] {
+        if files.is_empty() {
+            continue;
+        }
+        match run_one_language(binary, &files, lang, std, jobs, exhaustive, table) {
+            Ok(mut found) => findings.append(&mut found),
+            Err(reason) => notes.push(reason),
+        }
+    }
+
+    if findings.is_empty() && !notes.is_empty() {
+        return ToolRun::failed(tool(), notes.remove(0));
+    }
+
+    ToolRun {
+        tool: tool(),
+        outcome: ToolOutcome::Ran,
+        findings,
+        notes,
+    }
+}
+
+fn run_one_language(
+    binary: &str,
+    sources: &[PathBuf],
+    language: &str,
+    std: &str,
+    jobs: usize,
+    exhaustive: bool,
+    table: &CweTable,
+) -> Result<Vec<Finding>, String> {
     let mut cmd = Command::new(binary);
     cmd.arg(format!("--std={std}"))
-        .arg("--language=c++")
+        .arg(format!("--language={language}"))
         .arg("--enable=warning,style,portability")
         .arg("--inline-suppr")
         .arg("--error-exitcode=0")
@@ -54,25 +99,13 @@ pub fn run(
         cmd.arg(source);
     }
 
-    let output = match cmd.output() {
-        Ok(output) => output,
-        Err(err) => {
-            return ToolRun::failed(tool(), format!("could not run `{binary}`: {err}"));
-        }
-    };
+    let output = cmd
+        .output()
+        .map_err(|err| format!("could not run `{binary}`: {err}"))?;
 
     // cppcheck writes its XML report to stderr, not stdout.
     let xml = String::from_utf8_lossy(&output.stderr).into_owned();
-
-    match parse(&xml, table) {
-        Ok(findings) => ToolRun {
-            tool: tool(),
-            outcome: ToolOutcome::Ran,
-            findings,
-            notes: Vec::new(),
-        },
-        Err(err) => ToolRun::failed(tool(), format!("could not parse cppcheck XML: {err}")),
-    }
+    parse(&xml, table).map_err(|err| format!("could not parse cppcheck XML ({language}): {err}"))
 }
 
 /// cppcheck's own severity vocabulary.

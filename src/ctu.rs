@@ -266,6 +266,20 @@ fn index_shard(
     outcome
 }
 
+/// The clang driver for a translation unit.
+///
+/// A `.c` file must be driven by `clang`, not `clang++`. Forcing the C++ driver
+/// makes the compile database's own `-std=c11` illegal -- "invalid argument
+/// '-std=c11' not allowed with 'C++'" -- so every C unit fails to parse. On a
+/// mixed project that is silent and total: 156 of 159 units dropped out of the
+/// CTU index before this existed.
+pub fn driver_for(source: &Path) -> &'static str {
+    match source.extension().and_then(|e| e.to_str()) {
+        Some("c") => "clang",
+        _ => "clang++",
+    }
+}
+
 /// Serialize one translation unit's AST to `<dir>/ast/<abs source path>.ast`.
 fn emit_ast(
     source: &Path,
@@ -278,7 +292,7 @@ fn emit_ast(
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut cmd = Command::new("clang++");
+    let mut cmd = Command::new(driver_for(source));
     cmd.arg("-emit-ast").arg("-o").arg(&out);
 
     // With a compile database, reuse that unit's real flags: include paths and

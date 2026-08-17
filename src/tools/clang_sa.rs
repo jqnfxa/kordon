@@ -18,7 +18,7 @@ use std::process::Command;
 use anyhow::Result;
 
 use crate::compile_db::CompileDb;
-use crate::ctu::{parse_ctu_progress, CallGraph, CtuIndex};
+use crate::ctu::{driver_for, parse_ctu_progress, CallGraph, CtuIndex};
 use crate::cwe::CweTable;
 use crate::finding::{Confidence, Event, Finding, Severity, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
@@ -139,7 +139,7 @@ fn analyze_one(
     index: &CtuIndex,
     out: &Path,
 ) -> Result<(bool, CallGraph)> {
-    let mut cmd = Command::new("clang++");
+    let mut cmd = Command::new(driver_for(source));
     cmd.arg("--analyze")
         // Anything else silently discards cross-file diagnostics.
         .arg("--analyzer-output")
