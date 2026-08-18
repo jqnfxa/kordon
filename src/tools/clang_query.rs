@@ -31,10 +31,9 @@ pub struct QueryCheck {
     /// be appended. Kept split because the guards are the part that changes:
     /// each one exempts a way of writing "I already checked this".
     pub base: &'static str,
-    /// Whether to append the guard exemptions. Only the subtraction check
-    /// wants them: `x + 1` overflows only at the type maximum, which code
-    /// effectively never guards explicitly, so there is no idiom to exempt.
-    pub guarded: bool,
+    /// Which exemptions to append. Each check has its own notion of "already
+    /// handled", and using the wrong one is worse than using none.
+    pub exemption: Exemption,
     /// Extra compiler flags for this check alone.
     pub extra_args: &'static [&'static str],
     /// Only run where the build defines this macro. A check about what a
@@ -44,19 +43,83 @@ pub struct QueryCheck {
     pub message: &'static str,
 }
 
+/// What counts as "the programmer already handled this" for a given check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exemption {
+    /// Nothing is exempt.
+    None,
+    /// The operand is already known non-zero by an enclosing condition.
+    ArithmeticGuard,
+    /// The asserted condition is also tested by real code, so the check does
+    /// survive into the shipped build after all.
+    RealCheckPresent,
+}
+
 impl QueryCheck {
     pub fn matcher(&self) -> String {
         let mut m = String::from(self.base);
-        if self.guarded {
-            for shape in GUARD_SHAPES {
-                m.push_str(", unless(");
-                m.push_str(&guard_clause(shape));
-                m.push(')');
+        match self.exemption {
+            Exemption::None => {}
+            Exemption::ArithmeticGuard => {
+                for shape in GUARD_SHAPES {
+                    m.push_str(", unless(");
+                    m.push_str(&guard_clause(shape));
+                    m.push(')');
+                }
+            }
+            Exemption::RealCheckPresent => {
+                for shape in REAL_CHECK_SHAPES {
+                    m.push_str(", unless(");
+                    m.push_str(&real_check_clause(shape));
+                    m.push(')');
+                }
             }
         }
         m.push(')');
         m
     }
+}
+
+/// One way of naming a value inside a condition, bound and back-referenced.
+struct CheckShape {
+    bound: &'static str,
+    back_reference: &'static str,
+}
+
+/// `a.cols` -- a member of some object.
+const CHECK_MEMBER: CheckShape = CheckShape {
+    bound: "memberExpr(member(fieldDecl().bind(\"af\")))",
+    back_reference: "memberExpr(member(fieldDecl(equalsBoundNode(\"af\"))))",
+};
+
+/// `n` -- a plain variable or parameter.
+const CHECK_VAR: CheckShape = CheckShape {
+    bound: "declRefExpr(to(varDecl().bind(\"av\")))",
+    back_reference: "declRefExpr(to(varDecl(equalsBoundNode(\"av\"))))",
+};
+
+const REAL_CHECK_SHAPES: &[CheckShape] = &[CHECK_MEMBER, CHECK_VAR];
+
+/// Exempt an assert whose condition is also tested by real code.
+///
+/// `assert(c)` expands to the ternary `c ? (void)0 : __assert_fail(...)`, never
+/// to an `if`. So any `ifStmt` in the function is code that survives NDEBUG,
+/// and an assert duplicated by one is documentation rather than the only
+/// defence. Written `assert(x == y); if (x != y) return;` -- which is a
+/// reasonable idiom -- the check must stay quiet.
+///
+/// Tying the two together by the *declaration* they name is an approximation:
+/// a function that asserts about one object and separately tests the same field
+/// of another is exempted too. That errs toward silence, which is the right
+/// direction for a check that is low confidence by construction.
+fn real_check_clause(shape: &CheckShape) -> String {
+    format!(
+        "allOf(\
+hasAncestor(conditionalOperator(hasCondition(hasDescendant({bound})))), \
+hasAncestor(functionDecl(hasDescendant(ifStmt(hasCondition(hasDescendant({back})))))))",
+        bound = shape.bound,
+        back = shape.back_reference
+    )
 }
 
 
@@ -201,7 +264,7 @@ hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guarded: true,
+    exemption: Exemption::ArithmeticGuard,
     extra_args: &[],
     only_if_defined: None,
     message: "unsigned subtraction with no guard that the left operand is large enough; \
@@ -244,7 +307,7 @@ hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guarded: false,
+    exemption: Exemption::None,
     extra_args: &[],
     only_if_defined: None,
     message: "unsigned addition with no check that the left operand is below the type maximum; \
@@ -285,7 +348,7 @@ hasAncestor(ifStmt(hasCondition(hasDescendant(\
 memberExpr(member(fieldDecl(hasType(booleanType())).bind(\"flag\"))))))), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guarded: false,
+    exemption: Exemption::None,
     extra_args: &[],
     only_if_defined: None,
     message: "owning pointer member is released only when a bool member permits it; \
@@ -327,7 +390,7 @@ pub const ASSERT_ONLY_VALIDATION: QueryCheck = QueryCheck {
 callee(functionDecl(hasName(\"__assert_fail\"))), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    guarded: false,
+    exemption: Exemption::RealCheckPresent,
     extra_args: &["-UNDEBUG"],
     only_if_defined: Some("NDEBUG"),
     message: "this check does not exist in this build: assert() expands to nothing under \

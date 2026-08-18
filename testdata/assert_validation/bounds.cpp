@@ -71,4 +71,53 @@ bool multiply_checked(Matrix &a, Matrix &b, Matrix &out)
     return true;
 }
 
+
+// ------------------------- assert AND a real check: must NOT be flagged
+//
+// The idiom that decides whether this check is usable. `assert` documents the
+// precondition and the `if` enforces it; the enforcement survives NDEBUG, so
+// there is nothing to report. Before this case existed the check flagged it,
+// which would have made every properly-defended function a finding.
+//
+// The two are told apart structurally rather than by guesswork: `assert(c)`
+// expands to the ternary `c ? (void)0 : __assert_fail(...)` and never to an
+// `if`, so any ifStmt in the function is code that survives the macro.
+
+void multiply_asserted_and_checked(Matrix &a, Matrix &b, Matrix &out)
+{
+    assert(a.cols == b.rows);
+    if (a.cols != b.rows) {
+        return;
+    }
+
+    for (std::size_t i = 0; i < a.rows; ++i) {
+        for (std::size_t j = 0; j < b.cols; ++j) {
+            for (std::size_t k = 0; k < a.cols; ++k) {
+                out.at(i, j) += a.at(i, k) * b.at(k, j);
+            }
+        }
+    }
+}
+
+// The same pair for plain parameters rather than members, since the exemption
+// has to recognise both ways of naming a value.
+
+void fill_asserted_only(std::size_t n, std::size_t capacity, double *p)
+{
+    assert(n <= capacity);                      // must be flagged
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i] = 0.0;
+    }
+}
+
+void fill_asserted_and_checked(std::size_t n, std::size_t capacity, double *p)
+{
+    assert(n <= capacity);
+    if (n > capacity) {                         // must NOT be flagged
+        return;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        p[i] = 0.0;
+    }
+}
 }  // namespace kordon_probe
