@@ -111,6 +111,33 @@ effects and the check finds causes. That is a property of the measurement.
 **Remaining non-401 misses: 61, of which CWE-119 is 43 (70%).** That is now the
 whole game, and it is precisely what abstract interpretation addresses.
 
+## Loop-shaped false positives — fixed, and worth little on this corpus
+
+Four shapes were reported as defects and are not:
+
+```cpp
+while (k > 0)  { use(k - 1); --k; }              // guard is a while condition
+while (k != 0) { use(k - 1); --k; }
+for (std::size_t i = n; i > 0; --i) use(i - 1);  // guard is a for condition
+for (std::size_t i = 1; i < n; ++i) use(i - 1);  // guard is the initialiser
+for (std::size_t i = 0; i + 1 < v.size(); ++i) use(v[i + 1]);  // counter + 1
+```
+
+`do`/`while` is deliberately still reported: its condition runs after the body,
+so the first iteration is genuinely unguarded.
+
+All confirmed to cost nothing — CWE-191 stays 49/52, CWE-190 stays 17/19.
+
+**But the whole-tree effect is negligible: 7 422 visible findings to 7 395,
+about -0.4%.** The per-file measurements taken while developing these looked
+much larger and were comparing against a guard-blind matcher, not against the
+shipped one. On this corpus the noise lives almost entirely in `pro-bounds-*`
+and the other prolific checks, and loop idioms are a rounding error against it.
+
+They mattered elsewhere: on a Qt project two of the three findings in the
+project's own code were exactly these shapes. Worth having for correctness, not
+as a route to a quieter report on a numerical library.
+
 ## The 42:1 ratio was measuring the wrong thing
 
 Splitting it by what the report actually shows:
