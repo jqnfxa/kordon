@@ -368,17 +368,45 @@ survives the IKOS layer.
    the operation was expressed before LLVM 8 added the instruction. With that,
    the previously-fatal file analyzes completely.
 
+### Entry points: solved — use call-graph roots
+
+`scripts/ikos-entry-points.sh` prints the entry points for a `.bc`. Both
+problems have the same answer.
+
+**Which names.** Read them out of IKOS's own AR, after `ikos-pp` then
+`ikos-import`, rather than from `llvm-nm`. Exact by construction, and it avoids
+the C++ constructor aliases (`_ZN3acl3AnyC1EOS0_`) that `llvm-nm` reports and
+IKOS rejects as "could not find function". Note `ikos-import` must run on
+*preprocessed* bitcode — on raw bitcode it fails with "llvm select instructions
+are not supported" even where a full `ikos` run succeeds.
+
+**How many.** Only the roots — functions no other function in the unit calls.
+An entry point's parameters are unconstrained, so naming every function fills
+the report with artifacts of that choice. Measured on one real unit
+(13 functions, 1 root):
+
+| entry points | checks | safe | warnings |
+|---|---|---|---|
+| all 13 functions | 1419 | 1316 | 103 |
+| call-graph roots only | 1338 | 1271 | **67** |
+
+The 36 warnings that vanish are exactly the artifacts — "variable might be
+uninitialized" 35 → 7, "memory access might be invalid" 8 → 0 — while "possible
+buffer overflow" stays at 60. Nothing real is lost.
+
+Validated on a second unrelated file: 581 checks, 511 safe, 70 warnings, entry
+point derived automatically.
+
 ### Still open before it can be a Kordon runner
 
-- **Entry points.** Library code has no `main`, and IKOS requires `-e <symbol>`.
-  Symbols from `llvm-nm` do not map cleanly onto IKOS's AR — C++ constructor
-  aliases (`_ZN3acl3AnyC1EOS0_`) are rejected as "could not find function".
-  Needs a symbol list derived from `ikos-import` rather than from the object.
-- Analysing an unconstrained entry point makes its parameters top, which
-  produces "might be uninitialized" warnings for every parameter. Needs
-  filtering or whole-program entry from real callers.
-- Output parsing: `-f json` and `-f sarif` both exist, so the schema mapping is
-  straightforward once entry points are solved.
+- Wire it up as a runner: emit bitcode per TU, derive entry points, run with
+  `-f json`, map analyses to CWEs (`boa`→119, `uio`→190/191, `dbz`→369,
+  `nullity`→476, `uva`→457, `dfa`→415).
+- Decide how to report the **safe** verdict. It is the one genuinely new piece
+  of information — no other engine can say it — and the report has nowhere to
+  put "this was proved" today.
+- 25% of translation units still need the `fneg` rewrite; that is handled, but
+  any other unsupported instruction will surface the same way.
 
 ## Environment
 
