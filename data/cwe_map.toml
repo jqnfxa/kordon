@@ -206,6 +206,11 @@ name = "Missing Default Case in Switch Statement"
 tier = 0
 
 [[cwe]]
+id = 248
+name = "Uncaught Exception"
+tier = 0
+
+[[cwe]]
 id = 480
 name = "Use of Incorrect Operator"
 tier = 0
@@ -528,6 +533,15 @@ confidence = "low"
 tool = "clang-tidy"
 check = "bugprone-empty-catch"
 cwe = 390
+confidence = "low"
+
+# An exception escaping a destructor or a noexcept function terminates the
+# process. A real defect class, but a control-flow one rather than a memory or
+# value-safety one, so out of Kordon's remit.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-exception-escape"
+cwe = 248
 confidence = "low"
 
 # Out of scope by decision, not by omission.
