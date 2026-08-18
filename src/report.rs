@@ -305,7 +305,7 @@ impl<'a> Report<'a> {
         }
 
         let mut out = format!(
-            "\n  Concentrated: half of them are in {} of {} file(s). Excluding vendored or\n               generated code here is usually the shortest route to a readable report:\n",
+            "\n  Concentrated: half of them are in {} of {} file(s). Excluding vendored\n  or generated code here is usually the shortest route to a readable report:\n",
             files_for_half,
             ranked.len()
         );
