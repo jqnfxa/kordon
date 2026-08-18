@@ -194,6 +194,76 @@ dataflow fact. Treat CWE-190 findings as "can overflow if unvalidated", not as
   `acl_fix/` as well as `acl_raw/`; a check that cannot tell them apart is
   counting syntax, not finding defects.
 
+## Known limitations
+
+Grouped by whether they can be engineered away.
+
+### Fundamental — no amount of tooling fixes these
+
+- **`#ifdef` is invisible.** Code in an inactive configuration never reaches the
+  AST, so no engine can see it. ACL has 272 `#if`-family directives and its
+  analyzed build leaves `INIT_LIBBPG`, `USE_OPENCV` and `NUMBERTURN` undefined.
+  Only remedy: analyze each configuration as a separate run and merge. Not done.
+- **Intent is undecidable.** For CWE-190/191 no layer can tell a deliberate
+  wraparound from a bug — not the matcher, not IKOS, and not the sanitizer,
+  which flags a textbook FNV-1a hash. These stay permanently low confidence.
+- **Absence of findings is never proof of safety.** Every clean report means
+  "these engines did not flag it", nothing more.
+- **Dynamic analysis needs execution.** Whatever line coverage the tests reach
+  is the hard ceiling of that layer, and it is not wired up at all yet.
+
+### Detection gaps, with known causes
+
+- **CWE-119: 16/59.** The remainder are `vector::operator[]` where proving the
+  container can be empty needs interprocedural range reasoning. No configured
+  engine reaches it — IKOS was the hope and contributed nothing unique.
+- **CWE-401: 9/66**, but mostly moot — the corpus positions are largely the
+  reference tool's RAII false positives. Kordon targets the cause instead
+  (`kordon-manual-ownership-flag`, 5 class-level findings, silent on the fixed
+  tree). This will never score well against a line-keyed ground truth.
+- **CWE-763 0/4, CWE-415 0/1, CWE-369 2/3** — small tail, uninvestigated.
+- **Guard shapes the CWE-191 matcher cannot see**: a precondition validated by
+  an early exit (`if (a > b) throw; ... b - a`). Needs dataflow. IKOS was tested
+  on exactly this and still warns, under both `interval` and `dbm`.
+- **CWE-190 fails the specificity test.** It reports corrected code identically
+  to broken code, because the corpus fixes it with precondition-and-throw.
+  Treat those findings as "can overflow if unvalidated", not "is unvalidated".
+
+### Precision — the largest practical problem
+
+Visible in-scope findings on the reference corpus: **6 877 for 162 real
+positions, a 42:1 ratio.**
+
+| confidence | findings |
+|---|---|
+| high | 227 |
+| medium | 846 |
+| low | 5 804 |
+
+The low tier moves only −5% on a tree where ~226 defects were fixed, while the
+high tier moves −14%. `pro-bounds-*` alone is ~3 300 findings and is completely
+inert between the two trees — but removing it costs 16 real positions, so it
+cannot simply be deleted.
+
+### Tooling constraints
+
+- **A compile database is effectively required.** Without one, AST-matcher
+  checks still fire on a broken TU while the path-sensitive engine silently
+  skips it, so a file can show dozens of findings and never have been analyzed.
+- **clang-tidy has no SARIF** (LLVM 18); its YAML uses byte offsets and carries
+  no CWE, and it cannot express cross-file paths — hence a separate CTU runner.
+- **IKOS needs clang-14 bitcode, `-O0`, and `fneg` lowering**, and its "error"
+  verdict is only a proof when it names a concrete allocation.
+- **Dedup is line-exact.** Two engines reporting one defect on adjacent lines
+  stay separate.
+
+### Unresolved
+
+- pkta shows 51 files failing under clang-tidy in batch that compile cleanly
+  individually with their exact database flags. Cause not established.
+- CWE-762 vs 763 for `unix.MismatchedDeallocator` — worth 4 positions; needs a
+  decision on which the requirements name.
+
 ## Next steps, roughly in order
 
 1. ~~Re-run the full ACL tree with CTU.~~ **Done** — 34.3%, see above.
