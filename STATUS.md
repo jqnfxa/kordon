@@ -432,6 +432,37 @@ point derived automatically.
 - 25% of translation units still need the `fneg` rewrite; that is handled, but
   any other unsupported instruction will surface the same way.
 
+## Engine audit — what each one actually earns
+
+Measured on the full reference corpus, counting only what reaches the visible
+report. "Unique" means no other engine found that position.
+
+| engine | positions found | unique | raw findings | verdict |
+|---|---|---|---|---|
+| clang-tidy | 90 | 9 | 10 948 | keep — broadest reach |
+| clang-sa-ctu | 74 | 5 | 363 | keep — best signal-to-noise by far |
+| **kordon-query** | 66 | **66** | 5 162 | **keep — every position is unique** |
+| cppcheck | 29 | **0** | 1 106 | keep, but for corroboration only |
+| ikos | 21 | **0** | 52 269 | **not earning its place** |
+
+Reading it:
+
+- **Kordon's own checks are the single largest unique contributor.** All 66
+  positions — CWE-191 (49) and CWE-190 (17) — are found by nothing else. That
+  is the whole justification for writing custom checks rather than only
+  orchestrating.
+- **clang-sa-ctu has the best ratio in the set**: 74 positions from 363 raw
+  findings. Everything else is one to two orders of magnitude noisier.
+- **cppcheck finds nothing unique here.** Its value is corroboration — a second
+  independent engine agreeing raises confidence a step — and different blind
+  spots on other codebases. Cheap enough to keep on those grounds, but it is
+  not pulling detection weight on this corpus.
+- **IKOS is not earning its place.** 52 269 raw findings, 14 869 of them
+  unproven, 21 positions found and **none of them unique**. It costs the
+  largest share of runtime and contributes nothing no other engine already
+  had. Leave it opt-in and off by default; revisit only for whole-program
+  analysis from a real `main`, where its proofs can actually ground.
+
 ## Environment
 
 - CodeChecker 6.28.2 at `~/.venv/codechecker/bin/CodeChecker` (add to PATH).
