@@ -191,6 +191,13 @@ id = 843
 name = "Access of Resource Using Incompatible Type (Type Confusion)"
 tier = 1
 
+# The root of a memory-safety chain rather than a style issue: a bounds check
+# that is compiled out still ends in an out-of-bounds access.
+[[cwe]]
+id = 754
+name = "Improper Check for Unusual or Exceptional Conditions"
+tier = 1
+
 # Real defect classes, but outside Kordon's memory/value-safety remit. Recorded
 # so findings land somewhere honest rather than in the unmapped gap list.
 [[cwe]]
@@ -772,6 +779,16 @@ confidence = "low"
 tool = "ikos"
 check = "ikos-ignored-free"
 cwe = 758
+confidence = "low"
+
+# CWE-754. Validation that only exists in debug builds. The consequence is
+# whatever the assert was guarding -- on the reference corpus, bounds (CWE-119)
+# on two defects its maintainers still list as open, and which no other engine
+# reached because the check is gone before any analyser sees the code.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-assert-only-validation"
+cwe = 754
 confidence = "low"
 
 # ------------------------------------------------------------------ cppcheck

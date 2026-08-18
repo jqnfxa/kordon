@@ -35,6 +35,11 @@ pub struct QueryCheck {
     /// wants them: `x + 1` overflows only at the type maximum, which code
     /// effectively never guards explicitly, so there is no idiom to exempt.
     pub guarded: bool,
+    /// Extra compiler flags for this check alone.
+    pub extra_args: &'static [&'static str],
+    /// Only run where the build defines this macro. A check about what a
+    /// particular build configuration removes is meaningless anywhere else.
+    pub only_if_defined: Option<&'static str>,
     /// Shown in the finding message.
     pub message: &'static str,
 }
@@ -197,6 +202,8 @@ hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
     guarded: true,
+    extra_args: &[],
+    only_if_defined: None,
     message: "unsigned subtraction with no guard that the left operand is large enough; \
 wraps to a huge value instead of going negative",
 };
@@ -238,6 +245,8 @@ hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
     guarded: false,
+    extra_args: &[],
+    only_if_defined: None,
     message: "unsigned addition with no check that the left operand is below the type maximum; \
 wraps to a small value instead of growing",
 };
@@ -277,13 +286,60 @@ memberExpr(member(fieldDecl(hasType(booleanType())).bind(\"flag\"))))))), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
     guarded: false,
+    extra_args: &[],
+    only_if_defined: None,
     message: "owning pointer member is released only when a bool member permits it; \
 ownership lives in a flag rather than in the type, so any path that leaves the flag wrong \
 leaks the memory or frees it twice",
 };
 
-pub const CHECKS: &[QueryCheck] =
-    &[UNSIGNED_SUBTRACTION, UNSIGNED_ADDITION, MANUAL_OWNERSHIP_FLAG];
+/// Validation that exists only in debug builds.
+///
+/// `assert(cond)` expands to nothing when `NDEBUG` is defined, so a function
+/// whose only precondition check is an assert has no check at all in the build
+/// that ships. Nothing else can see this: the assert is gone before any
+/// analyser looks, so every engine reports the function as unguarded-but-fine.
+/// This check restores it with `-UNDEBUG` purely to find it, and reports it
+/// only for units the build actually compiles with `NDEBUG`.
+///
+/// The reference codebase is the case in point. `matMult` validates its
+/// dimensions with nothing but
+///
+///     assert(a.getCols() == b.getRows() && ...);
+///
+/// and then runs `res(i,j) += a(i,k) * b(k,j)` with the loop bounded by
+/// `a.getCols()`. Under NDEBUG a mismatched pair indexes `b` past its bounds.
+/// Two of the defects its maintainers list as still-open are exactly this, and
+/// they were the only CWE-119 positions no engine reached.
+///
+/// Measured there: 448 of 448 translation units define NDEBUG, and 517 assert
+/// sites disappear with them -- an order of magnitude fewer than `pro-bounds-*`
+/// emits, for a hazard that is real by construction rather than by suspicion.
+///
+/// Low confidence, like everything else here: an assert may be documenting an
+/// invariant the caller genuinely cannot violate. What the check states is a
+/// fact about the build, not a claim about the code.
+pub const ASSERT_ONLY_VALIDATION: QueryCheck = QueryCheck {
+    id: "kordon-assert-only-validation",
+    // Under -UNDEBUG, `assert(c)` becomes `c ? void(0) : __assert_fail(...)`,
+    // so the call to __assert_fail is what marks the site.
+    base: "callExpr(\
+callee(functionDecl(hasName(\"__assert_fail\"))), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation())",
+    guarded: false,
+    extra_args: &["-UNDEBUG"],
+    only_if_defined: Some("NDEBUG"),
+    message: "this check does not exist in this build: assert() expands to nothing under \
+NDEBUG, which the build defines, so whatever it validates goes unvalidated at run time",
+};
+
+pub const CHECKS: &[QueryCheck] = &[
+    UNSIGNED_SUBTRACTION,
+    UNSIGNED_ADDITION,
+    MANUAL_OWNERSHIP_FLAG,
+    ASSERT_ONLY_VALIDATION,
+];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
 pub fn find_binary() -> Option<String> {
@@ -341,6 +397,13 @@ pub fn run(
                     let mut out = Vec::new();
                     for check in CHECKS {
                         for file in files {
+                            // A check conditioned on a build macro is only
+                            // meaningful where the build actually defines it.
+                            if let Some(macro_name) = check.only_if_defined {
+                                if !defines_macro(compile_db, file, macro_name) {
+                                    continue;
+                                }
+                            }
                             out.extend(run_one(binary, check, file, compile_db, extra_args, root));
                         }
                     }
@@ -385,6 +448,21 @@ pub fn run(
     }
 }
 
+/// Whether the build compiles this unit with `-D<macro>`.
+fn defines_macro(db: Option<&CompileDb>, file: &Path, macro_name: &str) -> bool {
+    let Some(db) = db else {
+        // With no database there are no build flags to consult, and guessing
+        // would make the finding a claim about a configuration we never saw.
+        return false;
+    };
+    let with_value = format!("-D{macro_name}=");
+    let bare = format!("-D{macro_name}");
+    db.args_for(file).is_some_and(|args| {
+        args.iter()
+            .any(|a| a == &bare || a.starts_with(&with_value))
+    })
+}
+
 pub struct RawMatch {
     check_id: String,
     pub file: PathBuf,
@@ -401,6 +479,9 @@ fn run_one(
     root: &Path,
 ) -> Vec<RawMatch> {
     let mut cmd = Command::new(binary);
+    for extra in check.extra_args {
+        cmd.arg(format!("--extra-arg={extra}"));
+    }
     cmd.arg("-c").arg(format!("match {}", check.matcher()));
 
     if let Some(db) = compile_db {
