@@ -55,10 +55,18 @@ Per-class against the still-open list: CWE-119 7/7, CWE-457 13/13, CWE-563
 **Precision is the counterweight**: 7 422 visible in-scope findings — 228 high,
 96 medium, 7 098 low. Roughly 44 findings per real position.
 
-**A false positive we now emit**: the single CWE-415 position, which the author
-confirms is a false positive with sanitizers agreeing, is now matched by
-`bugprone-unhandled-self-assignment`. Adding that mapping bought a point of
-apparent recall by reproducing someone else's mistake.
+**The CWE-415 "1/1" is a false match, not a detection.** The code there is
+
+```cpp
+Image& Image::operator=(const Image& other) {
+    if (d == other.d) return *this;   // self-assignment IS handled
+```
+
+`bugprone-unhandled-self-assignment` recognises only the `this != &other`
+idiom, so it reports this pimpl-comparison guard anyway. Independently verified,
+and it agrees with the maintainers having already dismissed the position. Six of
+that check's fifteen findings on this corpus are guarded code. Count real recall
+as **166/280**, not 167.
 
 **modules/math subset** (22 TUs, 75 confirmed positions):
 

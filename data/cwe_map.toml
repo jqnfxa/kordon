@@ -460,8 +460,13 @@ check = "bugprone-implicit-widening-of-multiplication-result"
 cwe = 190
 confidence = "medium"
 
-# operator= that does not guard against self-assignment frees the source
-# before copying it.
+# operator= that does not guard against self-assignment frees the source before
+# copying it. Real class, unreliable check: it recognises only the
+# `if (this != &other)` idiom, so a pimpl class guarding with
+# `if (d == other.d) return *this;` -- which is equally correct -- is reported
+# anyway. Measured on the reference corpus: 6 of its 15 findings are guarded
+# code, including the one position the maintainers had already dismissed as a
+# false positive. Low confidence, and do not promote it.
 [[rule]]
 tool = "clang-tidy"
 check = "bugprone-unhandled-self-assignment"
