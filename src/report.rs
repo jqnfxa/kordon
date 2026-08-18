@@ -38,20 +38,23 @@ impl<'a> Report<'a> {
     pub fn in_scope(&self) -> Vec<&MergedFinding> {
         self.merged
             .iter()
-            .filter(|m| m.primary.proof != Some(Proof::Unproven))
+            .filter(|m| !all_unproven(m))
             .filter(|m| m.primary.cwe.is_some_and(|c| self.table.in_scope(c)))
             .collect()
     }
 
-    /// Checks an analyzer could prove neither safe nor unsafe.
+    /// Checks no contributing engine could settle.
+    ///
+    /// Every contributor must be unproven. If one engine merely failed to
+    /// prove something that another engine reported outright, that is a
+    /// finding, and hiding it because the merge happened to pick the
+    /// undecided report as representative would lose it entirely.
     pub fn unproven(&self) -> Vec<&MergedFinding> {
-        self.merged
-            .iter()
-            .filter(|m| m.primary.proof == Some(Proof::Unproven))
-            .collect()
+        self.merged.iter().filter(|m| all_unproven(m)).collect()
     }
 
     /// Findings an analyzer *proved*, rather than pattern-matched.
+    #[allow(dead_code)]
     pub fn proved(&self) -> Vec<&MergedFinding> {
         self.merged
             .iter()
@@ -402,6 +405,7 @@ impl<'a> Report<'a> {
                     "severity": m.severity().to_string(),
                     "confidence": m.confidence.to_string(),
                     "message": m.primary.message,
+                    "unproven": all_unproven(m),
                     "tools": m.tools(),
                     "agreement": m.agreement(),
                     "native_ids": std::iter::once(&m.primary)
@@ -454,6 +458,13 @@ impl<'a> Report<'a> {
             ],
         })
     }
+}
+
+/// True when no contributing engine could decide this one.
+fn all_unproven(m: &MergedFinding) -> bool {
+    std::iter::once(&m.primary)
+        .chain(m.others.iter())
+        .all(|f| f.proof == Some(Proof::Unproven))
 }
 
 fn confidence_tag(confidence: Confidence) -> &'static str {

@@ -325,6 +325,30 @@ Measure line coverage before expecting much from this layer.
 `scripts/setup-ikos.sh` builds IKOS v3.5 into `third_party/ikos` (gitignored).
 Working: `ikos 3.5`. `scripts/ikos-bitcode.sh` produces input it can read.
 
+### On ACL it contributed nothing to the visible report
+
+Measured on the full tree with everything enabled (12m32s, 274 units):
+
+| | findings | matched |
+|---|---|---|
+| visible report | 7 582 | 162/280 = **57.9%** |
+| including the hidden unproven bucket | 22 155 | 187/280 = 66.8% |
+
+**IKOS proved nothing: `proved: 0`.** Its entire contribution — 14 869
+findings — landed in the unproven bucket, of which 25 happen to sit on a real
+defect line. A hit rate of 25 in 14 869 is not a detector, it is a list of
+everything the analyser could not decide, which on library code is everything.
+
+The cause is structural, not a tuning problem. A library function analysed as a
+synthetic entry point has pointer parameters backed by no allocation, so IKOS
+can prove neither that an access is in bounds nor that it is out of them. The
+792-safe-checks result that motivated this work came from a *self-contained* C
+file whose arrays were local and whose sizes were literals.
+
+So the CWE-119 hope did not survive contact: 16/59 visible, unchanged from
+before IKOS. Whole-program analysis from a real `main` would be a different
+experiment; analysing a library this way is not.
+
 ### What it gives that nothing else does
 
 Three-valued verdicts. On a real float-heavy C file (pkta `refraction.c`):
