@@ -188,6 +188,28 @@ id = 843
 name = "Access of Resource Using Incompatible Type (Type Confusion)"
 tier = 1
 
+# Real defect classes, but outside Kordon's memory/value-safety remit. Recorded
+# so findings land somewhere honest rather than in the unmapped gap list.
+[[cwe]]
+id = 478
+name = "Missing Default Case in Switch Statement"
+tier = 0
+
+[[cwe]]
+id = 481
+name = "Assigning instead of Comparing"
+tier = 0
+
+[[cwe]]
+id = 390
+name = "Detection of Error Condition without Action"
+tier = 0
+
+[[cwe]]
+id = 783
+name = "Operator Precedence Logic Error"
+tier = 0
+
 # Seen in tool output, deliberately not claimed as Kordon defect classes
 [[cwe]]
 id = 170
@@ -412,6 +434,81 @@ tool = "clang-tidy"
 check = "clang-analyzer-deadcode.DeadStores"
 cwe = 563
 confidence = "high"
+
+# ---------------------------------------- clang-tidy gaps found by running it
+# Every entry here was an unmapped finding on a real project first. The style
+# ones are given a tier-0 CWE deliberately: an unmapped finding means "nobody
+# has classified this", and leaving a decision recorded as an open question is
+# how the gap list stops being useful.
+
+# Multiplication done in a narrow type and widened afterwards -- the overflow
+# has already happened. This was in the prior work's table and was missed when
+# porting it; 83 findings on one corpus.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-implicit-widening-of-multiplication-result"
+cwe = 190
+confidence = "medium"
+
+# operator= that does not guard against self-assignment frees the source
+# before copying it.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-unhandled-self-assignment"
+cwe = 415
+confidence = "low"
+
+# A switch with no default over an enum leaves anything it does not cover
+# unassigned -- the shape behind the uninitialised-struct defect class.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-switch-missing-default-case"
+cwe = 478
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-assignment-in-if-condition"
+cwe = 481
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-macro-parentheses"
+cwe = 783
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-empty-catch"
+cwe = 390
+confidence = "low"
+
+# Out of scope by decision, not by omission.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-easily-swappable-parameters"
+cwe = 398
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-reserved-identifier"
+cwe = 398
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-branch-clone"
+cwe = 398
+
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-incorrect-roundings"
+cwe = 682
+
+[[rule]]
+tool = "cppcheck"
+check = "missingOverride"
+cwe = 398
 
 # --------------------------------------------------- clang-tidy: bugprone-*
 # AST-matcher level. Real defects, but no path sensitivity behind them.
@@ -644,13 +741,35 @@ cwe = 476
 
 [[rule]]
 tool = "ikos"
-check = "ikos-div-by-zero"
+check = "ikos-division-by-zero"
 cwe = 369
 
 [[rule]]
 tool = "ikos"
 check = "ikos-double-free"
 cwe = 415
+
+[[rule]]
+tool = "ikos"
+check = "ikos-free"
+cwe = 590
+
+# Analysis limitations rather than defect classes: IKOS says it could not
+# resolve an indirect call, or could not tell whether a free was of heap
+# memory. Mapped to a tier-0 CWE so they stop appearing as gaps in this table
+# -- "we decided this is not a defect class" and "we have not looked at it yet"
+# must not look the same.
+[[rule]]
+tool = "ikos"
+check = "ikos-unknown-function-call-pointer"
+cwe = 758
+confidence = "low"
+
+[[rule]]
+tool = "ikos"
+check = "ikos-ignored-free"
+cwe = 758
+confidence = "low"
 
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a

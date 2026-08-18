@@ -253,14 +253,18 @@ fn run_shard(
         Err(err) => return ShardResult::SpawnFailed(format!("could not run `{binary}`: {err}")),
     };
 
-    // clang-tidy prints one "Error while processing <file>." per translation
-    // unit it could not compile. Counting them turns a vague non-zero exit
-    // into a number the report can state.
+    // clang-tidy prints "Error while processing <file>." once per *compile
+    // command*, not per file. A project that builds each source twice -- a
+    // shared and a static target, which cmake emits routinely -- therefore
+    // doubles the count, and the report claimed 102 of 159 units failed where
+    // 63 distinct files did. Count files.
     let stderr = String::from_utf8_lossy(&output.stderr);
     let failed = stderr
         .lines()
-        .filter(|line| line.starts_with("Error while processing"))
-        .count();
+        .filter_map(|line| line.strip_prefix("Error while processing "))
+        .map(|rest| rest.trim_end_matches('.').to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
 
     // No diagnostics at all means no file is written.
     let yaml = std::fs::read_to_string(&fixes_path).ok();
@@ -452,6 +456,22 @@ FilePath: '{p}'\n      FileOffset: 15\n      Replacements: []\n    Level: Warnin
         assert_eq!(f.native_id, "modernize-use-nullptr");
         assert_eq!(f.cwe, None);
         assert_eq!(f.cwe_source, CweSource::Unmapped);
+    }
+
+    #[test]
+    fn repeated_failures_for_one_file_count_once() {
+        // cmake emits a compile command per target, so a source built into both
+        // a shared and a static library appears twice and fails twice.
+        let stderr = "Error while processing /p/a.c.\n\
+                      Error while processing /p/a.c.\n\
+                      Error while processing /p/b.c.\n";
+        let failed = stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix("Error while processing "))
+            .map(|r| r.trim_end_matches('.').to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert_eq!(failed, 2);
     }
 
     #[test]

@@ -540,6 +540,43 @@ define void @b() {\n  call @a()\n}\n";
         assert_eq!(roots, vec!["a".to_string(), "b".to_string()]);
     }
 
+    /// Every rule id observed in a full run over a real codebase.
+    ///
+    /// Rule ids were guessed twice and wrong twice -- the checker is
+    /// `null-pointer-deref`, not `-dereference`, and `division-by-zero`, not
+    /// `div-by-zero`, which a "correction" then broke in the other direction.
+    /// An unmapped finding is silently dropped from the in-scope report, so
+    /// this is pinned rather than trusted.
+    const OBSERVED_RULE_IDS: &[&str] = &[
+        "ikos-buffer-overflow",
+        "ikos-division-by-zero",
+        "ikos-free",
+        "ikos-ignored-free",
+        "ikos-null-pointer-deref",
+        "ikos-signed-int-overflow",
+        "ikos-signed-int-underflow",
+        "ikos-uninitialized-variable",
+        "ikos-unknown-function-call-pointer",
+        "ikos-unknown-memory-access",
+        "ikos-unsigned-int-overflow",
+        "ikos-unsigned-int-underflow",
+    ];
+
+    #[test]
+    fn every_observed_rule_id_is_mapped() {
+        let table = CweTable::builtin().unwrap();
+        let missing: Vec<_> = OBSERVED_RULE_IDS
+            .iter()
+            .filter(|id| {
+                table
+                    .classify(&tool(), id, "", None, Confidence::Low)
+                    .cwe
+                    .is_none()
+            })
+            .collect();
+        assert!(missing.is_empty(), "unmapped IKOS rule ids: {missing:?}");
+    }
+
     #[test]
     fn ungrounded_errors_are_not_treated_as_proofs() {
         // A proof names the allocation it overflowed.
