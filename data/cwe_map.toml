@@ -841,6 +841,15 @@ check = "kordon-assert-only-validation"
 cwe = 754
 confidence = "low"
 
+# CWE-119 at high precision. `&&` and `||` short-circuit left to right, so an
+# index used to subscript before the condition that bounds it is read out of
+# range. A logic error rather than a risky shape, hence medium rather than low.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-index-used-before-check"
+cwe = 119
+confidence = "medium"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through

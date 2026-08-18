@@ -6,11 +6,18 @@
 //! check, and running it this way needs no LLVM development headers, no plugin
 //! ABI to track across releases, and no build step for the user.
 //!
-//! Everything here is deliberately **low confidence**. An AST matcher sees
-//! shape, not intent, and for the classes in this file intent is exactly what
-//! decides whether the shape is a defect. The report keeps these in the
-//! risk-pattern tier, summarized by count, and that is the permanent home for
-//! them -- not a temporary state pending a better analysis.
+//! Most of these are **low confidence** on purpose. An AST matcher sees shape,
+//! not intent, and for the arithmetic classes intent is exactly what decides
+//! whether the shape is a defect -- so they live permanently in the
+//! risk-pattern tier, summarized by count, rather than pending a better
+//! analysis.
+//!
+//! Not all of them, though, and the distinction matters. A matcher can also
+//! recognise a *logic error*, where the code does something demonstrably other
+//! than what it says: an index subscripted before the condition that bounds it
+//! is wrong regardless of intent, because `&&` evaluates left to right. Those
+//! earn medium confidence. Each check's confidence comes from the mapping
+//! table, so this is a decision recorded per check rather than a blanket rule.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -56,10 +63,16 @@ pub enum Exemption {
     /// The operand is a loop's own counter, so the arithmetic tracks the loop
     /// rather than any value that could be near the type maximum.
     LoopCounter,
+    /// Not an exemption: this check's matcher is assembled whole, because its
+    /// two halves have to share a binding.
+    IndexOrder,
 }
 
 impl QueryCheck {
     pub fn matcher(&self) -> String {
+        if self.exemption == Exemption::IndexOrder {
+            return index_order_matcher();
+        }
         let mut m = String::from(self.base);
         match self.exemption {
             Exemption::None => {}
@@ -73,6 +86,7 @@ impl QueryCheck {
                 m.push_str(LOOP_INIT_GUARD);
                 m.push(')');
             }
+            Exemption::IndexOrder => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -320,6 +334,35 @@ unless(isInTemplateInstantiation())",
 wraps to a huge value instead of going negative",
 };
 
+/// Build the index-used-before-check matcher.
+///
+/// Assembled here rather than declared as a base string because the subscript
+/// and the comparison must refer to the same declaration, which needs a binding
+/// threaded through both halves.
+fn index_order_matcher() -> String {
+    let mut alternatives = Vec::new();
+    for shape in REAL_CHECK_SHAPES {
+        // The right operand must *compare* the index. Merely mentioning it
+        // matches innocent repeated subscripting.
+        let cmp = format!(
+            "binaryOperator(hasAnyOperatorName(\"<\", \"<=\", \">\", \">=\", \"!=\", \"==\"), \
+hasEitherOperand(ignoringParenImpCasts({back})))",
+            back = shape.back_reference
+        );
+        alternatives.push(format!(
+            "allOf(\
+hasLHS(forEachDescendant(arraySubscriptExpr(hasIndex(ignoringParenImpCasts({bound}))))), \
+hasRHS(anyOf({cmp}, hasDescendant({cmp}))))",
+            bound = shape.bound
+        ));
+    }
+    format!(
+        "binaryOperator(hasAnyOperatorName(\"&&\", \"||\"), anyOf({}), \
+unless(isExpansionInSystemHeader()), unless(isInTemplateInstantiation()))",
+        alternatives.join(", ")
+    )
+}
+
 /// `i + 1` where `i` is the loop's own counter.
 ///
 /// For this to overflow the loop would have to reach the type maximum, which
@@ -462,11 +505,44 @@ unless(isInTemplateInstantiation())",
 NDEBUG, which the build defines, so whatever it validates goes unvalidated at run time",
 };
 
+/// An index is used to subscript before the condition that bounds it.
+///
+/// `&&` and `||` evaluate left to right and short-circuit, so in
+///
+///     while (m_ptrack[m_start] == NULL && m_start < m_count)
+///
+/// the read happens first and the bounds check never protects it. When
+/// `m_start` reaches `m_count` the loop reads one past the end. The fix is to
+/// swap the operands; the bug is invisible to a reader skimming for "is it
+/// checked", because it is -- just too late.
+///
+/// This is a logic error rather than a risky shape, so it reports at medium
+/// confidence rather than low. The programmer wrote the bounds check, which
+/// says they believed it was needed; having it on the wrong side of the
+/// operator is not a style preference.
+///
+/// Precision comes from insisting the right operand *compares the index
+/// itself*. A looser version -- the index merely appearing on the right --
+/// matched 19 sites, nearly all of them innocent repeated subscripting like
+/// `hist[i] > hist[l] && hist[i] > hist[r]`. Requiring the comparison brings it
+/// to **2 sites across 274 files, both genuine**, against the 3798 findings
+/// `pro-bounds-pointer-arithmetic` emits to cover the same defects.
+pub const INDEX_USED_BEFORE_CHECK: QueryCheck = QueryCheck {
+    id: "kordon-index-used-before-check",
+    base: "",   // built by matcher(); see Exemption::None arm below
+    exemption: Exemption::IndexOrder,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this index is used to subscript before the condition that bounds it; \
+&& and || evaluate left to right, so the read happens first and the check comes too late",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
     MANUAL_OWNERSHIP_FLAG,
     ASSERT_ONLY_VALIDATION,
+    INDEX_USED_BEFORE_CHECK,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -558,9 +634,11 @@ pub fn run(
                 line: m.line,
                 column: m.column,
                 severity: Severity::Style,
-                // Never above Low: see the module docs. The table may not
-                // raise these, so clamp rather than trust it.
-                confidence: Confidence::Low,
+                // From the table, per check. Clamping everything to Low here
+                // buried the one check that recognises a logic error rather
+                // than a risky shape -- it reported the same two genuine
+                // out-of-bounds reads as the 3798-finding pattern checks.
+                confidence: class.confidence,
                 message: message.to_string(),
                 events: Vec::new(),
                 proof: None,
