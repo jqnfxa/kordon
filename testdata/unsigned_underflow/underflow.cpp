@@ -205,3 +205,90 @@ std::size_t from_zero(const std::vector<std::size_t> &v)
 }
 
 }  // namespace kordon_probe
+
+// ------------------------------------------------ guarded by a loop condition
+//
+// A `while` or `for` condition establishes the fact before the body runs,
+// exactly as an `if` does, and code uses the three interchangeably. Each of
+// these was reported as a defect until its statement kind was handled.
+//
+// `do`/`while` is the exception and must still be flagged: its condition is
+// evaluated after the body, so the first iteration runs unguarded.
+
+namespace kordon_probe {
+
+// while, greater-than -- must NOT be flagged
+void drain_while(std::size_t k)
+{
+    while (k > 0) {
+        consume(k - 1);
+        --k;
+    }
+}
+
+// while, not-equal -- must NOT be flagged
+void drain_while_ne(std::size_t k)
+{
+    while (k != 0) {
+        consume(k - 1);
+        --k;
+    }
+}
+
+// for, condition rather than initialiser -- must NOT be flagged
+void countdown(std::size_t n)
+{
+    for (std::size_t i = n; i > 0; --i) {
+        consume(i - 1);
+    }
+}
+
+// do/while -- MUST be flagged. The condition runs after the body, so the first
+// iteration subtracts from a value nothing has constrained.
+void drain_do_while(std::size_t k)
+{
+    do {
+        consume(k - 1);
+    } while (k-- > 0);
+}
+
+}  // namespace kordon_probe
+
+// -------------------------------------------- CWE-190 on a loop counter
+//
+// `i + 1` where `i` is the loop's own counter would need 2^64 iterations to
+// overflow. Real code writes it constantly to reach the next element, and
+// reporting each one buries the shape that matters.
+//
+// The exemption is exact rather than heuristic -- the operand must be the
+// variable the enclosing `for` declares -- because loop headers do contain real
+// overflows, just of other things: `i < layers + 3` and `y < roi.bottom() + 1`
+// are both genuine defects in the corpus this was measured against.
+
+namespace kordon_probe {
+
+std::size_t next_element_sum(const std::vector<std::size_t> &v)
+{
+    std::size_t total = 0;
+    // `i + 1` is the loop counter -- must NOT be flagged.
+    for (std::size_t i = 0; i + 1 < v.size(); ++i) {
+        total += v[i + 1];
+    }
+    return total;
+}
+
+std::size_t layered(const Roi &roi, std::size_t layers)
+{
+    std::size_t total = 0;
+    // `layers + 3` is not the counter, and `roi.right() + 1` is not either.
+    // Both must still be flagged.
+    for (std::size_t i = 0; i < layers + 3; ++i) {
+        total += i;
+    }
+    for (std::size_t y = roi.left(); y < roi.right() + 1; ++y) {
+        total += y;
+    }
+    return total;
+}
+
+}  // namespace kordon_probe

@@ -53,6 +53,9 @@ pub enum Exemption {
     /// The asserted condition is also tested by real code, so the check does
     /// survive into the shipped build after all.
     RealCheckPresent,
+    /// The operand is a loop's own counter, so the arithmetic tracks the loop
+    /// rather than any value that could be near the type maximum.
+    LoopCounter,
 }
 
 impl QueryCheck {
@@ -68,6 +71,11 @@ impl QueryCheck {
                 }
                 m.push_str(", unless(");
                 m.push_str(LOOP_INIT_GUARD);
+                m.push(')');
+            }
+            Exemption::LoopCounter => {
+                m.push_str(", unless(");
+                m.push_str(LOOP_COUNTER_OPERAND);
                 m.push(')');
             }
             Exemption::RealCheckPresent => {
@@ -181,6 +189,16 @@ const GUARD_SHAPES: &[GuardShape] = &[SHAPE_VAR, SHAPE_CALL_ON_VAR, SHAPE_CALL_O
 /// Using `hasDescendant` alone silently stopped exempting the simple form,
 /// which the corpus happened not to use, so the regression measured clean.
 ///
+/// The guard may be an `if`, a `while`, or a `for` condition. All three
+/// establish the fact before the body runs, and code uses them
+/// interchangeably: `while (k > 0) { use(k - 1); --k; }` and
+/// `for (i = n; i > 0; --i) use(i - 1)` are as common as the `if` form and were
+/// reported as defects until each was added.
+///
+/// `do`/`while` is deliberately absent. Its condition is evaluated *after* the
+/// body, so the first iteration runs unguarded and the subtraction really can
+/// underflow -- exempting it would hide a real defect.
+///
 /// Only `>`, `>=` and `!=` count. `if (k < n)` establishes nothing about zero,
 /// and an earlier version that accepted any comparison swallowed three real
 /// defects.
@@ -190,10 +208,14 @@ fn guard_clause(shape: &GuardShape) -> String {
 hasLHS(ignoringParenImpCasts({})))",
         shape.back_reference
     );
+    let condition = format!("hasCondition(anyOf({cmp}, hasDescendant({cmp})))");
     format!(
-        "allOf(hasLHS(ignoringParenImpCasts({})), \
-hasAncestor(ifStmt(hasCondition(anyOf({cmp}, hasDescendant({cmp}))))))",
-        shape.operand
+        "allOf(hasLHS(ignoringParenImpCasts({operand})), \
+hasAncestor(stmt(anyOf(\
+ifStmt({condition}), \
+whileStmt({condition}), \
+forStmt({condition})))))",
+        operand = shape.operand
     )
 }
 
@@ -298,6 +320,22 @@ unless(isInTemplateInstantiation())",
 wraps to a huge value instead of going negative",
 };
 
+/// `i + 1` where `i` is the loop's own counter.
+///
+/// For this to overflow the loop would have to reach the type maximum, which
+/// means iterating 2^64 times. Real code writes `i + 1` constantly to look at
+/// the next element, and reporting each one buries the shape that matters.
+///
+/// The distinction is exact rather than heuristic: the operand must be the
+/// variable the enclosing `for` declares. On the reference corpus 4 of the 19
+/// CWE-190 positions sit in a loop header, and every one of them adds to
+/// something else -- `nOctaveLayers + 3`, `roi_out.bottom() + 1` -- so none is
+/// exempted. Measured: 171 findings drop to 163 with all 17 detections kept.
+const LOOP_COUNTER_OPERAND: &str = "allOf(\
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"ci\"))))), \
+hasAncestor(forStmt(hasLoopInit(declStmt(hasSingleDecl(\
+varDecl(equalsBoundNode(\"ci\"))))))))";
+
 /// CWE-190, integer overflow on addition.
 ///
 /// The mirror of [`UNSIGNED_SUBTRACTION`], and unreachable by the same engines
@@ -334,7 +372,7 @@ hasType(isUnsignedInteger()), \
 hasRHS(ignoringParenImpCasts(integerLiteral())), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation())",
-    exemption: Exemption::None,
+    exemption: Exemption::LoopCounter,
     extra_args: &[],
     only_if_defined: None,
     message: "unsigned addition with no check that the left operand is below the type maximum; \
@@ -710,6 +748,23 @@ Match #2:\n\n\
     }
 
     #[test]
+    fn loop_conditions_guard_as_well_as_if_conditions() {
+        // `while (k > 0) { use(k - 1); }` and `for (i = n; i > 0; --i)` state
+        // the same fact as the `if` form and were reported as defects until
+        // each was handled.
+        let m = UNSIGNED_SUBTRACTION.matcher();
+        assert!(m.contains("whileStmt(hasCondition"));
+        assert!(m.contains("forStmt(hasCondition"));
+    }
+
+    #[test]
+    fn do_while_is_not_a_guard() {
+        // Its condition runs after the body, so the first iteration is
+        // unguarded and the subtraction really can underflow.
+        assert!(!UNSIGNED_SUBTRACTION.matcher().contains("doStmt"));
+    }
+
+    #[test]
     fn guard_matches_both_direct_and_nested_conditions() {
         // Regression test for a real bug: switching the condition matcher to
         // `hasDescendant` alone stopped exempting a bare `if (k > 0)`, because
@@ -722,9 +777,14 @@ Match #2:\n\n\
     }
 
     #[test]
-    fn addition_check_has_no_guard_clauses() {
-        // `x + 1` overflows only at the type maximum; there is no guard idiom.
-        assert!(!UNSIGNED_ADDITION.matcher().contains("equalsBoundNode"));
+    fn addition_exempts_only_the_loop_counter() {
+        // There is no guard idiom for `x + 1` -- it overflows only at the type
+        // maximum -- but a loop counter cannot get there, and real code writes
+        // `i + 1` constantly.
+        let m = UNSIGNED_ADDITION.matcher();
+        assert!(m.contains("hasLoopInit"));
+        // Not the arithmetic guards: those answer a different question.
+        assert!(!m.contains("hasAnyOperatorName"));
     }
 
     #[test]
