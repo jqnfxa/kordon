@@ -320,6 +320,66 @@ will flag correct code (verified: it reports a textbook FNV-1a hash).
 **Ceiling to check first:** sanitizers only see what those 11 tests execute.
 Measure line coverage before expecting much from this layer.
 
+## IKOS — built and measured
+
+`scripts/setup-ikos.sh` builds IKOS v3.5 into `third_party/ikos` (gitignored).
+Working: `ikos 3.5`. `scripts/ikos-bitcode.sh` produces input it can read.
+
+### What it gives that nothing else does
+
+Three-valued verdicts. On a real float-heavy C file (pkta `refraction.c`):
+
+```
+Total checks: 861    safe: 796 (92.5%)    definite unsafe: 0    warnings: 65
+```
+
+796 accesses **proved** in bounds. Every other engine Kordon drives can only
+fail to flag something; none can say "safe". That is the property that makes it
+a candidate to replace `pro-bounds-*`, which emits 3341 findings on ACL without
+distinguishing corrected code from broken.
+
+### Guard handling: closes one documented gap, not both
+
+| guard shape | AST matcher | IKOS |
+|---|---|---|
+| `if (k > 0) { k - 1 }` | exempt | proved safe |
+| `if (k == 0) return; k - 1` | **flagged (limitation)** | **proved safe** |
+| `if (lo > hi) return; hi - lo` | **flagged (limitation)** | **still warns** |
+
+So IKOS resolves the early-return guard, which is a real win. It does **not**
+resolve the relational precondition — tested under `interval` and under `dbm`,
+which is relational and built in without APRON. That is the exact idiom the
+reference corpus uses to fix its CWE-190 sites, so that specificity failure
+survives the IKOS layer.
+
+### Three input constraints, all measured
+
+1. **Bitcode must come from clang-14.** IKOS links LLVM 14 and rejects an
+   LLVM 18 module outright. Verified both ways.
+2. **Must be `-O0`.** At `-O1` clang folds `n - 1` into the address computation
+   and the debug location collapses, so findings lose the line they belong to.
+3. **`fneg` must be lowered.** IKOS 3.5's importer does not implement it
+   ("unsupported llvm instruction fneg") and clang emits it for every
+   floating-point negation. This is fatal for numerical code — the only kind
+   worth running an interval analyser over. It blocked **10 of 40** sampled ACL
+   units and the first pkta file tried.
+
+   `scripts/ikos-bitcode.sh` rewrites `fneg x` to `fsub -0.0, x`, which is how
+   the operation was expressed before LLVM 8 added the instruction. With that,
+   the previously-fatal file analyzes completely.
+
+### Still open before it can be a Kordon runner
+
+- **Entry points.** Library code has no `main`, and IKOS requires `-e <symbol>`.
+  Symbols from `llvm-nm` do not map cleanly onto IKOS's AR — C++ constructor
+  aliases (`_ZN3acl3AnyC1EOS0_`) are rejected as "could not find function".
+  Needs a symbol list derived from `ikos-import` rather than from the object.
+- Analysing an unconstrained entry point makes its parameters top, which
+  produces "might be uninitialized" warnings for every parameter. Needs
+  filtering or whole-program entry from real callers.
+- Output parsing: `-f json` and `-f sarif` both exist, so the schema mapping is
+  straightforward once entry points are solved.
+
 ## Environment
 
 - CodeChecker 6.28.2 at `~/.venv/codechecker/bin/CodeChecker` (add to PATH).
