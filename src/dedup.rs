@@ -28,9 +28,21 @@ pub struct MergedFinding {
 }
 
 impl MergedFinding {
-    /// How many distinct engines reported this defect.
-    pub fn agreement(&self) -> usize {
+    /// How many reports were merged into this one.
+    ///
+    /// Not the same as how many engines agree: one engine can report the same
+    /// defect several times under different check ids, and counting reports as
+    /// engines overstates corroboration -- the report once said "6 engines
+    /// agree" over two tools.
+    pub fn report_count(&self) -> usize {
         1 + self.others.len()
+    }
+
+    /// How many *distinct* engines reported this defect. This is the number
+    /// that means anything: two engines with different blind spots agreeing is
+    /// evidence, one engine saying it twice is not.
+    pub fn distinct_tools(&self) -> usize {
+        self.tools().len()
     }
 
     pub fn severity(&self) -> Severity {
@@ -106,7 +118,7 @@ pub fn merge(findings: Vec<Finding>) -> Vec<MergedFinding> {
         b.confidence
             .cmp(&a.confidence)
             .then(b.severity().cmp(&a.severity()))
-            .then(b.agreement().cmp(&a.agreement()))
+            .then(b.distinct_tools().cmp(&a.distinct_tools()))
             .then(a.primary.file.cmp(&b.primary.file))
             .then(a.primary.line.cmp(&b.primary.line))
             .then(a.primary.native_id.cmp(&b.primary.native_id))
@@ -173,7 +185,7 @@ mod tests {
         ]);
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].agreement(), 2);
+        assert_eq!(merged[0].distinct_tools(), 2);
         assert_eq!(merged[0].tools(), vec!["clang-tidy", "cppcheck"]);
     }
 
@@ -235,7 +247,9 @@ mod tests {
             finding("cppcheck", "y", 5, Some(401), Confidence::Medium),
         ]);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].agreement(), 2);
+        // Two reports, but one engine -- so no corroboration and no promotion.
+        assert_eq!(merged[0].report_count(), 2);
+        assert_eq!(merged[0].distinct_tools(), 1);
         assert_eq!(merged[0].confidence, Confidence::Medium);
     }
 

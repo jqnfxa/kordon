@@ -202,10 +202,11 @@ impl<'a> Report<'a> {
 
             for m in group {
                 let f = &m.primary;
-                let corroboration = if m.agreement() > 1 {
-                    format!(" ({} engines agree)", m.agreement())
-                } else {
-                    String::new()
+                // Distinct engines, not merged reports: one engine reporting
+                // the same defect under several check ids is not corroboration.
+                let corroboration = match m.distinct_tools() {
+                    0 | 1 => String::new(),
+                    n => format!(" ({n} engines agree)"),
                 };
                 // A proof outranks any amount of agreement between matchers.
                 let proved = if m.primary.proof == Some(Proof::Refuted) {
@@ -455,7 +456,8 @@ impl<'a> Report<'a> {
                     "message": m.primary.message,
                     "unproven": all_unproven(m),
                     "tools": m.tools(),
-                    "agreement": m.agreement(),
+                    "reports": m.report_count(),
+                    "distinct_tools": m.distinct_tools(),
                     "native_ids": std::iter::once(&m.primary)
                         .chain(m.others.iter())
                         .map(|f| f.native_id.clone())

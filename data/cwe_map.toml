@@ -206,6 +206,16 @@ name = "Missing Default Case in Switch Statement"
 tier = 0
 
 [[cwe]]
+id = 480
+name = "Use of Incorrect Operator"
+tier = 0
+
+[[cwe]]
+id = 483
+name = "Incorrect Block Delimitation"
+tier = 0
+
+[[cwe]]
 id = 481
 name = "Assigning instead of Comparing"
 tier = 0
@@ -491,6 +501,27 @@ confidence = "low"
 tool = "clang-tidy"
 check = "bugprone-macro-parentheses"
 cwe = 783
+confidence = "low"
+
+# `a < b < c` parses as `(a < b) < c`, comparing a bool against c.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-chained-comparison"
+cwe = 480
+confidence = "low"
+
+# `if (x);` -- the body is the empty statement and the block that follows always
+# runs.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-suspicious-semicolon"
+cwe = 483
+confidence = "low"
+
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-optin.portability.UnixAPI"
+cwe = 758
 confidence = "low"
 
 [[rule]]
