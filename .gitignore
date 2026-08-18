@@ -73,3 +73,6 @@ Testing/
 
 # local analysis output
 /tmp
+
+# locally built analysis engines
+/third_party
