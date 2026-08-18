@@ -25,32 +25,40 @@ Ground truth: `/home/shard/VsCode/acl/report/problems.md` — **280 confirmed
 positions** (`(CWE, file, line)`), 104 excluded as false positives. Parsed to
 `tmp/confirmed.json`. Raw list is 714 records → 384 unique.
 
-**Full ACL tree**, current: **162/280 = 57.9%** (`tmp/cov_raw.json`, ~12 min,
-274 units analyzed + 212 skipped as not-in-build, CTU + kordon-query on).
+**Full ACL tree**, current (`tmp/now2.json`, CTU on, IKOS off per the audit).
+Three numbers, because one does not describe it honestly:
 
-| CWE | recall | | CWE | recall |
-|---|---|---|---|---|
-| 563 | 46/49 (94%) | | 119 | 16/59 (27%) |
-| 191 | 49/52 (94%) † | | 401 | 9/66 — mostly FP, see below |
-| 190 | 17/19 (89%) ‡ | | 763/415 | 0/5 |
-| 457 | 17/19 (89%) | | 369 | 2/3 |
-| 476 | 5/7 (71%) | | 416 | 1/1 |
+| measured against | result |
+|---|---|
+| the full 280-position list | 167/280 = **59.6%** |
+| excluding the two classes the author confirms are mostly false positives (401, 415) | 157/213 = **73.7%** |
+| the 52 positions the author's own triage lists as *still open real defects* | **49/52 = 94%** at function level, 26/52 = 50% at the exact line |
 
-† specificity verified against `acl_fix` — corrected sites go quiet.
-‡ specificity **not** verified: reports fixed code identically to broken code,
-because the fix idiom is a precondition validated by an early throw. Treat as
-"can overflow if unvalidated", not "is unvalidated".
+The third is the one that answers "does it find real bugs". The gap between 94%
+and 50% is anchoring, not detection: the reference tool reports many defects at
+the enclosing function's header while Kordon reports them at the offending
+statement. Window sensitivity, for honesty:
 
-A full `acl_fix` run was in progress when this was written; when
-`tmp/cov_fix.json` completes, compare per-CWE finding counts against
-`tmp/cov_raw.json` (counts, not line numbers — the fixes shift lines).
+| window | matched |
+|---|---|
+| ±3 lines | 26/52 (50%) |
+| ±10 | 37/52 (71%) |
+| ±20 | 41/52 (79%) |
+| ±40 | 47/52 (90%) |
+| ±60 | 49/52 (94%) |
 
-History: 11.4% (no compile db) -> 24.6% (db) -> 34.3% (CTU + checks re-enabled
-+ build-membership filter) -> 51.8% (CWE-191 check) -> 57.9% (CWE-190 check). Older logs `tmp/acl_log.txt`,
-`tmp/acl_log_db.txt` predate all three and understate badly.
+Only 3 of the 52 are missed outright: one CWE-190 and two CWE-191.
 
-Compile failures are now **5 of 274**, down from 159 of 486 — almost all of
-that was files outside the build, not broken code.
+Per-class against the still-open list: CWE-119 7/7, CWE-457 13/13, CWE-563
+29/29, CWE-190 0/1, CWE-191 0/2.
+
+**Precision is the counterweight**: 7 422 visible in-scope findings — 228 high,
+96 medium, 7 098 low. Roughly 44 findings per real position.
+
+**A false positive we now emit**: the single CWE-415 position, which the author
+confirms is a false positive with sanitizers agreeing, is now matched by
+`bugprone-unhandled-self-assignment`. Adding that mapping bought a point of
+apparent recall by reproducing someone else's mistake.
 
 **modules/math subset** (22 TUs, 75 confirmed positions):
 
