@@ -185,33 +185,63 @@ impl Ikos {
     }
 }
 
+/// LLVM fast-math flags, which may sit between the opcode and the type.
+const FAST_MATH_FLAGS: &[&str] = &[
+    "nnan", "ninf", "nsz", "arcp", "contract", "afn", "reassoc", "fast",
+];
+
 /// Rewrite `fneg x` to `fsub -0.0, x`.
 ///
 /// The two differ only in cases irrelevant to interval analysis: the NaN
 /// payload produced, and `fneg(-0.0)` versus `fsub(-0.0, -0.0)`.
+///
+/// Only the prefix is rewritten and the remainder of the line is left exactly
+/// as it was. That matters more than it looks: with `-g` every instruction
+/// carries trailing metadata, so a real line reads
+/// `%fneg = fneg double %242, !dbg !1370`. An earlier version split on the last
+/// space and produced `fsub double %242, !dbg -0.0, !1370`, which llvm-as
+/// rejects -- silently costing 16 of 22 translation units.
 pub fn lower_fneg(ir: &str) -> String {
     let mut out = String::with_capacity(ir.len() + 64);
     for line in ir.split_inclusive('\n') {
         match line.split_once("= fneg ") {
-            Some((lhs, rest)) => {
-                // rest is "[fast-math flags ]<type> <operand>"; the type is the
-                // last token before the operand.
-                let mut parts = rest.rsplitn(2, ' ');
-                match (parts.next(), parts.next()) {
-                    (Some(operand), Some(flags_and_type)) => {
-                        out.push_str(lhs);
-                        out.push_str("= fsub ");
-                        out.push_str(flags_and_type);
-                        out.push_str(" -0.000000e+00, ");
-                        out.push_str(operand);
-                    }
-                    _ => out.push_str(line),
+            Some((lhs, rest)) => match split_after_type(rest) {
+                Some((flags_and_type, remainder)) => {
+                    out.push_str(lhs);
+                    out.push_str("= fsub ");
+                    out.push_str(flags_and_type);
+                    out.push_str("-0.000000e+00, ");
+                    out.push_str(remainder);
                 }
-            }
+                None => out.push_str(line),
+            },
             None => out.push_str(line),
         }
     }
     out
+}
+
+/// Split `[flags ]<type> <rest>` after the type, keeping the trailing space.
+fn split_after_type(rest: &str) -> Option<(&str, &str)> {
+    let mut idx = 0;
+    loop {
+        let remainder = rest.get(idx..)?;
+        // A vector type such as `<2 x double>` contains spaces, so it has to be
+        // matched by its brackets rather than tokenized.
+        if remainder.starts_with('<') {
+            let close = remainder.find('>')?;
+            let space = remainder[close..].find(' ')? + close;
+            idx += space + 1;
+            return Some((rest.get(..idx)?, rest.get(idx..)?));
+        }
+        let token_end = remainder.find(' ')?;
+        let token = &remainder[..token_end];
+        idx += token_end + 1;
+        if !FAST_MATH_FLAGS.contains(&token) {
+            // Not a flag, so it was the type.
+            return Some((rest.get(..idx)?, rest.get(idx..)?));
+        }
+    }
 }
 
 /// Functions defined in the AR that nothing else in it calls.
@@ -280,11 +310,22 @@ pub fn parse_sarif(text: &str, source: &Path, table: &CweTable) -> Result<Vec<Fi
                 (source.to_path_buf(), 0, 0)
             });
 
-            // `error` means IKOS proved the defect reachable -- stronger than
-            // any pattern match, so it earns High. `warning` means it could
-            // decide neither way, which is not a defect claim at all.
+            // A SARIF "error" is a proof only when IKOS had a concrete memory
+            // region to reason about. Analysing a library function as a
+            // synthetic entry point leaves its pointer parameters backed by no
+            // allocation at all, and IKOS then calls every dereference through
+            // them definitely invalid. Measured on one module: all 1564
+            // "error" results were of that kind -- 1507 reporting raw addresses
+            // and 57 saying outright that the offset could not be bounded --
+            // and not one named a real allocation. Reporting those as proofs
+            // would have put 1564 false certainties at the top of the report.
             let (proof, severity, confidence) = match level {
-                "error" => (Proof::Refuted, Severity::Error, Confidence::High),
+                "error" if is_real_proof(&message) => {
+                    (Proof::Refuted, Severity::Error, Confidence::High)
+                }
+                // An "error" the analyzer cannot ground in a real region is a
+                // statement about its own limits, so it belongs with the rest
+                // of those.
                 _ => (Proof::Unproven, Severity::Warning, Confidence::Low),
             };
 
@@ -308,6 +349,24 @@ pub fn parse_sarif(text: &str, source: &Path, table: &CweTable) -> Result<Vec<Fi
         }
     }
     Ok(findings)
+}
+
+/// Whether an "error" verdict rests on a concrete allocation.
+///
+/// A genuine proof names what it overflowed -- "accessing index 5 of local
+/// variable 'arr' of 4 elements". An artifact of unconstrained parameters
+/// reports bare addresses ("at address between 0x7fff8008") or admits the
+/// bound is unknown ("could not bound offset", "could not infer"). The latter
+/// are the analyzer describing its own ignorance, which is the opposite of a
+/// proof however the SARIF level is spelled.
+fn is_real_proof(message: &str) -> bool {
+    const NOT_GROUNDED: &[&str] = &[
+        "address between 0x",
+        "could not bound",
+        "could not infer",
+        "might be",
+    ];
+    !NOT_GROUNDED.iter().any(|marker| message.contains(marker))
 }
 
 /// Undo the XML entity escaping IKOS applies to SARIF message text.
@@ -423,14 +482,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lowers_fneg_preserving_flags() {
-        let ir = "  %3 = fneg double %2\n  %5 = fneg fast float %4\n  %6 = add i32 %1, 1\n";
+    fn lowers_fneg_preserving_flags_and_metadata() {
+        let ir = "  %3 = fneg double %2\n\
+                  \x20 %5 = fneg fast float %4\n\
+                  \x20 %7 = fneg <2 x double> %6\n\
+                  \x20 %6 = add i32 %1, 1\n";
         let out = lower_fneg(ir);
         assert!(out.contains("%3 = fsub double -0.000000e+00, %2"));
         // Fast-math flags sit between the opcode and the type and must survive.
         assert!(out.contains("%5 = fsub fast float -0.000000e+00, %4"));
-        // Unrelated instructions are untouched.
+        // Vector types contain spaces and cannot be tokenized naively.
+        assert!(out.contains("%7 = fsub <2 x double> -0.000000e+00, %6"));
         assert!(out.contains("%6 = add i32 %1, 1"));
+    }
+
+    #[test]
+    fn trailing_debug_metadata_survives_lowering() {
+        // With -g every instruction carries a !dbg suffix. Splitting on the
+        // last space instead of after the type produced invalid IR here and
+        // silently lost 16 of 22 translation units.
+        let ir = "  %fneg = fneg double %242, !dbg !1370\n";
+        assert_eq!(
+            lower_fneg(ir),
+            "  %fneg = fsub double -0.000000e+00, %242, !dbg !1370\n"
+        );
     }
 
     #[test]
@@ -463,6 +538,19 @@ define void @b() {\n  call @a()\n}\n";
         let mut roots = call_graph_roots(ar);
         roots.sort();
         assert_eq!(roots, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn ungrounded_errors_are_not_treated_as_proofs() {
+        // A proof names the allocation it overflowed.
+        assert!(is_real_proof(
+            "buffer overflow, accessing index 5 of local variable 'arr' of 4 elements"
+        ));
+        // These are the analyzer describing its own ignorance.
+        assert!(!is_real_proof(
+            "invalid memory access, accessing 2 bytes at address between 0x7fff8008"
+        ));
+        assert!(!is_real_proof("invalid memory access, could not bound offset"));
     }
 
     #[test]
