@@ -23,6 +23,9 @@ pub struct Report<'a> {
     /// Sources found on disk but absent from the compile database, so not part
     /// of the build and deliberately not analyzed.
     pub unlisted_files: usize,
+    /// Findings that landed in files outside the analyzed tree -- system or
+    /// dependency headers. Dropped, because they are not this project's to fix.
+    pub external_findings: usize,
     /// Cross-TU dependencies observed during the CTU pass. Empty without --ctu.
     pub call_graph: &'a CallGraph,
 }
@@ -158,6 +161,13 @@ impl<'a> Report<'a> {
         }
 
         out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
+        if self.external_findings > 0 {
+            out.push_str(&format!(
+                "  {} finding(s) dropped: they landed in system or dependency headers\n  \
+                 outside the analyzed tree, so they are not this project's to fix.\n",
+                self.external_findings
+            ));
+        }
         if self.unlisted_files > 0 {
             out.push_str(&format!(
                 "  {} file(s) skipped — absent from compile_commands.json, so not\n\
@@ -490,6 +500,7 @@ impl<'a> Report<'a> {
             "kordon_version": env!("CARGO_PKG_VERSION"),
             "analyzed_files": self.analyzed_files,
             "unlisted_files": self.unlisted_files,
+            "external_findings_dropped": self.external_findings,
             "engines": engines,
             "findings": findings,
             "summary": {

@@ -174,3 +174,34 @@ std::size_t validated_extent(const Roi &roi)
 }
 
 }  // namespace kordon_probe
+
+// ------------------------------------------- guarded by the loop initialiser
+//
+// `for (i = 1; ...) v[i - 1]` is idiomatic and safe, and the guard is the
+// loop's initialiser rather than any condition, so none of the `if`-based
+// exemptions can see it. Found by running against a real project where two of
+// the three reported defects were exactly this shape.
+
+namespace kordon_probe {
+
+std::size_t running_total(const std::vector<std::size_t> &v)
+{
+    std::size_t total = 0;
+    // Starts at 1, so `i - 1` can never underflow. Must NOT be flagged.
+    for (std::size_t i = 1; i < v.size(); ++i) {
+        total += v[i] - v[i - 1];
+    }
+    return total;
+}
+
+std::size_t from_zero(const std::vector<std::size_t> &v)
+{
+    std::size_t total = 0;
+    // Starts at 0, so the first iteration underflows. Must be flagged.
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        total += v[i - 1];
+    }
+    return total;
+}
+
+}  // namespace kordon_probe

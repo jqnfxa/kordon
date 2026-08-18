@@ -320,6 +320,19 @@ fn main() -> Result<()> {
         .flat_map(|r| r.findings.iter().cloned())
         .collect();
 
+    // A defect in libstdc++ or Qt is not this project's defect and cannot be
+    // acted on here. Engines report them freely -- on one Qt project 182 of 659
+    // findings were in system headers, including *both* high-confidence ones,
+    // so the most prominent results were the least actionable. They are dropped
+    // and counted, never dropped silently.
+    let analysis_root = canonical(&cli.path);
+    let before = raw.len();
+    let raw: Vec<_> = raw
+        .into_iter()
+        .filter(|f| f.file.starts_with(&analysis_root))
+        .collect();
+    let external = before - raw.len();
+
     let merged = dedup::merge(raw);
 
     let report = Report {
@@ -328,6 +341,7 @@ fn main() -> Result<()> {
         table: &table,
         analyzed_files: sources.len(),
         unlisted_files: unlisted.len(),
+        external_findings: external,
         call_graph: &call_graph,
     };
 

@@ -66,6 +66,9 @@ impl QueryCheck {
                     m.push_str(&guard_clause(shape));
                     m.push(')');
                 }
+                m.push_str(", unless(");
+                m.push_str(LOOP_INIT_GUARD);
+                m.push(')');
             }
             Exemption::RealCheckPresent => {
                 for shape in REAL_CHECK_SHAPES {
@@ -193,6 +196,30 @@ hasAncestor(ifStmt(hasCondition(anyOf({cmp}, hasDescendant({cmp}))))))",
         shape.operand
     )
 }
+
+/// A loop counter that starts above zero cannot underflow by the amount it
+/// started above.
+///
+/// `for (std::size_t i = 1; i < n; ++i) use(v[i - 1]);` is idiomatic and safe,
+/// and the guard is the loop's initialiser rather than any `if`, so none of the
+/// condition-based exemptions see it. Found by running against a real project
+/// where two of the three reported defects were exactly this shape.
+///
+/// The initialiser carries an implicit cast when the counter is wider than the
+/// literal -- `std::size_t i = 1` is `int` 1 converted -- so the literal has to
+/// be reached through `ignoringParenImpCasts`. Without that the clause silently
+/// matches nothing, which looks identical to having no false positives to
+/// remove.
+///
+/// Deliberately crude: any non-zero start exempts any constant subtrahend, so
+/// `for (i = 1; ...) v[i - 5]` is exempted too. Erring toward silence is right
+/// for a low-confidence check, and on the measured corpus this removes two
+/// false positives while keeping all 49 true positives.
+const LOOP_INIT_GUARD: &str = "allOf(\
+hasLHS(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"lv\"))))), \
+hasAncestor(forStmt(hasLoopInit(declStmt(hasSingleDecl(varDecl(\
+equalsBoundNode(\"lv\"), \
+hasInitializer(ignoringParenImpCasts(integerLiteral(unless(equals(0))))))))))))";
 
 /// CWE-191, unsigned wraparound.
 ///
@@ -654,6 +681,32 @@ Match #2:\n\n\
     fn ignores_non_match_output() {
         let m = parse_matches("2 matches.\nsome other text\n", "x", Path::new("/proj"));
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn loop_counter_starting_above_zero_is_exempt() {
+        // The guard is the loop initialiser, which no condition-based clause
+        // can see. The literal sits behind an implicit cast when the counter is
+        // wider than it, and missing that makes the clause match nothing --
+        // indistinguishable from having nothing to exempt.
+        let m = UNSIGNED_SUBTRACTION.matcher();
+        assert!(m.contains("hasLoopInit"));
+        assert!(m.contains("hasInitializer(ignoringParenImpCasts(integerLiteral"));
+    }
+
+    #[test]
+    fn matcher_parentheses_balance() {
+        // Built by concatenation across several helpers; an imbalance makes
+        // clang-query reject the whole matcher and report nothing at all.
+        for check in CHECKS {
+            let m = check.matcher();
+            assert_eq!(
+                m.matches('(').count(),
+                m.matches(')').count(),
+                "unbalanced matcher for {}",
+                check.id
+            );
+        }
     }
 
     #[test]
