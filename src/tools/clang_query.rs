@@ -372,6 +372,7 @@ pub fn run(
                 confidence: Confidence::Low,
                 message: message.to_string(),
                 events: Vec::new(),
+                proof: None,
             });
         }
     }

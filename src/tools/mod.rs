@@ -10,6 +10,7 @@
 //! report that silently omitted a crashed analyzer would be a lie.
 
 pub mod clang_query;
+pub mod ikos;
 pub mod clang_sa;
 pub mod clang_tidy;
 pub mod cppcheck;

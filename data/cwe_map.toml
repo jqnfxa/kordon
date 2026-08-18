@@ -594,6 +594,64 @@ check = "kordon-manual-ownership-flag"
 cwe = 401
 confidence = "low"
 
+# ---------------------------------------------------------------------- IKOS
+# Abstract interpretation. Unlike every other engine here, a finding may be a
+# *proof* that the defect occurs (SARIF level "error") rather than a pattern
+# match; those are reported at high confidence. A level of "warning" means the
+# analysis could decide neither way -- not a defect claim -- and the runner
+# pins those to low confidence regardless of what this table says.
+
+[[rule]]
+tool = "ikos"
+check = "ikos-buffer-overflow"
+cwe = 119
+
+[[rule]]
+tool = "ikos"
+check = "ikos-unknown-memory-access"
+cwe = 119
+confidence = "low"
+
+[[rule]]
+tool = "ikos"
+check = "ikos-unsigned-int-underflow"
+cwe = 191
+
+[[rule]]
+tool = "ikos"
+check = "ikos-unsigned-int-overflow"
+cwe = 190
+
+[[rule]]
+tool = "ikos"
+check = "ikos-signed-int-overflow"
+cwe = 190
+
+[[rule]]
+tool = "ikos"
+check = "ikos-signed-int-underflow"
+cwe = 191
+
+[[rule]]
+tool = "ikos"
+check = "ikos-uninitialized-variable"
+cwe = 457
+
+[[rule]]
+tool = "ikos"
+check = "ikos-null-pointer-deref"
+cwe = 476
+
+[[rule]]
+tool = "ikos"
+check = "ikos-div-by-zero"
+cwe = 369
+
+[[rule]]
+tool = "ikos"
+check = "ikos-double-free"
+cwe = 415
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through

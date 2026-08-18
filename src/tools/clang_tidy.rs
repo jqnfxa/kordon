@@ -365,6 +365,7 @@ pub fn parse(yaml: &str, table: &CweTable) -> Result<Vec<Finding>> {
             confidence: class.confidence,
             message: diag.message.text,
             events,
+            proof: None,
         });
     }
 

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::ctu::CallGraph;
 use crate::cwe::CweTable;
 use crate::dedup::MergedFinding;
-use crate::finding::{Confidence, CweSource};
+use crate::finding::{Confidence, CweSource, Proof};
 use crate::tools::{ToolOutcome, ToolRun};
 
 pub struct Report<'a> {
@@ -29,10 +29,33 @@ pub struct Report<'a> {
 
 impl<'a> Report<'a> {
     /// Findings whose CWE is one Kordon claims to target.
+    ///
+    /// Excludes anything an analyzer explicitly could not decide. "I could not
+    /// prove this either way" is a statement about the analysis, not a claim
+    /// about the code, and mixing the two would let the honest admission of a
+    /// limit read as an accusation. Those are reported separately, and only on
+    /// request -- see [`Self::unproven`].
     pub fn in_scope(&self) -> Vec<&MergedFinding> {
         self.merged
             .iter()
+            .filter(|m| m.primary.proof != Some(Proof::Unproven))
             .filter(|m| m.primary.cwe.is_some_and(|c| self.table.in_scope(c)))
+            .collect()
+    }
+
+    /// Checks an analyzer could prove neither safe nor unsafe.
+    pub fn unproven(&self) -> Vec<&MergedFinding> {
+        self.merged
+            .iter()
+            .filter(|m| m.primary.proof == Some(Proof::Unproven))
+            .collect()
+    }
+
+    /// Findings an analyzer *proved*, rather than pattern-matched.
+    pub fn proved(&self) -> Vec<&MergedFinding> {
+        self.merged
+            .iter()
+            .filter(|m| m.primary.proof == Some(Proof::Refuted))
             .collect()
     }
 
@@ -54,15 +77,64 @@ impl<'a> Report<'a> {
             .collect()
     }
 
-    pub fn render_text(&self, verbose: bool, show_all: bool) -> String {
+    pub fn render_text(&self, verbose: bool, show_all: bool, show_unproven: bool) -> String {
         let mut out = String::new();
 
         out.push_str(&self.render_engines());
         out.push_str(&self.render_findings(verbose, show_all));
         out.push_str(&self.render_call_graph());
         out.push_str(&self.render_gaps());
+        // Last, and only on request: a list of things a tool could not decide
+        // is noise to most readers and the whole point to a few.
+        out.push_str(&self.render_unproven(show_unproven));
         out.push_str(&self.render_caveats());
 
+        out
+    }
+
+    /// Checks no analyzer could settle.
+    ///
+    /// Off by default. Summarized either way, because a silent omission would
+    /// be the same mistake as reporting them as defects: the reader cannot tell
+    /// "nothing to say" from "nothing was looked at".
+    fn render_unproven(&self, show: bool) -> String {
+        let unproven = self.unproven();
+        if unproven.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        out.push_str("\n═══ Unproven ═══\n\n");
+        out.push_str(&format!(
+            "  {} check(s) an analyzer could prove neither safe nor unsafe.\n\
+             \x20 This is a limit of the analysis, not a defect claim.\n",
+            unproven.len()
+        ));
+
+        if !show {
+            let mut by_check: BTreeMap<String, usize> = BTreeMap::new();
+            for m in &unproven {
+                *by_check.entry(m.primary.native_id.clone()).or_default() += 1;
+            }
+            for (check, count) in by_check {
+                out.push_str(&format!("    {count:>6}  {check}\n"));
+            }
+            out.push_str("  Re-run with --show-unproven to list them.\n");
+            return out;
+        }
+
+        out.push('\n');
+        for m in &unproven {
+            let f = &m.primary;
+            out.push_str(&format!(
+                "    {}:{}:{}  [{}]\n      {}\n",
+                f.file.display(),
+                f.line,
+                f.column,
+                f.native_id,
+                f.message
+            ));
+        }
         out
     }
 
@@ -85,7 +157,8 @@ impl<'a> Report<'a> {
         out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
         if self.unlisted_files > 0 {
             out.push_str(&format!(
-                "  {} file(s) skipped — absent from compile_commands.json, so not part of\n                   the build. They were NOT analyzed; this is not a clean result for them.\n",
+                "  {} file(s) skipped — absent from compile_commands.json, so not\n\
+             \x20 part of the build. They were NOT analyzed; this is not a clean result.\n",
                 self.unlisted_files
             ));
         }
@@ -131,6 +204,12 @@ impl<'a> Report<'a> {
                 } else {
                     String::new()
                 };
+                // A proof outranks any amount of agreement between matchers.
+                let proved = if m.primary.proof == Some(Proof::Refuted) {
+                    "  PROVED"
+                } else {
+                    ""
+                };
 
                 out.push_str(&format!(
                     "    {}:{}:{}  {}{}\n",
@@ -138,7 +217,7 @@ impl<'a> Report<'a> {
                     f.line,
                     f.column,
                     confidence_tag(m.confidence),
-                    corroboration,
+                    format!("{corroboration}{proved}"),
                 ));
                 out.push_str(&format!("      {}\n", f.message));
                 out.push_str(&format!(
@@ -360,6 +439,8 @@ impl<'a> Report<'a> {
             "engines": engines,
             "findings": findings,
             "summary": {
+                "proved": self.proved().len(),
+                "unproven": self.unproven().len(),
                 "in_scope": self.in_scope().len(),
                 "out_of_scope": self.out_of_scope().len(),
                 "unmapped": self.unmapped().len(),

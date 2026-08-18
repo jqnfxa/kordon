@@ -270,6 +270,7 @@ pub fn parse_plist(path: &Path, table: &CweTable) -> Result<Vec<Finding>> {
             confidence: class.confidence,
             message,
             events,
+            proof: None,
         });
     }
 

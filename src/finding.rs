@@ -105,6 +105,27 @@ impl fmt::Display for CweSource {
     }
 }
 
+/// What an analyzer was able to *prove*, as distinct from what it found.
+///
+/// Only abstract interpretation produces this. Every other engine Kordon drives
+/// answers one question -- "did a pattern or a path match?" -- so silence from
+/// them is ambiguous between "safe" and "not looked at". An interval analyser
+/// answers a different question and can distinguish three outcomes, which is
+/// the single most useful thing it contributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Proof {
+    /// The analyzer proved the defect occurs on some reachable path. This is
+    /// stronger evidence than any pattern match: not "this looks wrong" but
+    /// "this is wrong".
+    Refuted,
+    /// The analyzer could prove neither safety nor error. Not a defect claim --
+    /// a statement about the limits of the analysis. Reported separately and
+    /// off by default, because a list of things a tool could not decide is
+    /// noise to most readers and essential to a few.
+    Unproven,
+}
+
 /// A single step in a tool's explanation of how it reached the defect
 /// (clang-analyzer's note chain, cppcheck's secondary `<location>` entries).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +153,10 @@ pub struct Finding {
     /// The path/trace the tool used to justify the finding. Often empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<Event>,
+    /// Set only by engines that reason about proofs. `None` means the engine
+    /// does not work that way, not that nothing was proved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<Proof>,
 }
 
 impl Finding {

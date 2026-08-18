@@ -155,6 +155,7 @@ mod tests {
             confidence: conf,
             message: format!("{id} at {line}"),
             events: Vec::new(),
+            proof: None,
         }
     }
 

@@ -286,6 +286,7 @@ impl PartialError {
             confidence: class.confidence,
             message: self.message,
             events,
+            proof: None,
         })
     }
 }

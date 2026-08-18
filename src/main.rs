@@ -95,6 +95,19 @@ struct Cli {
     #[arg(long)]
     ctu_dir: Option<PathBuf>,
 
+    /// Run IKOS, the abstract-interpretation engine. It is the only engine that
+    /// can *prove* an access safe rather than merely fail to flag it, and the
+    /// only one whose findings can be proofs rather than pattern matches.
+    /// Considerably slower, and needs scripts/setup-ikos.sh to have been run.
+    #[arg(long)]
+    ikos: bool,
+
+    /// List every check an analyzer could prove neither safe nor unsafe. These
+    /// are limits of the analysis rather than defect claims, so they are
+    /// summarized but not detailed by default.
+    #[arg(long)]
+    show_unproven: bool,
+
     /// Skip cppcheck.
     #[arg(long)]
     no_cppcheck: bool,
@@ -275,6 +288,31 @@ fn main() -> Result<()> {
         ));
     }
 
+    // IKOS. Opt-in: it needs its own toolchain, costs far more than the other
+    // engines, and answers a different question from them.
+    let ikos_scratch = std::env::temp_dir().join(format!("kordon-ikos-{}", std::process::id()));
+    if cli.ikos {
+        match tools::ikos::Ikos::find(Path::new(env!("CARGO_MANIFEST_DIR"))) {
+            Some(engine) => runs.push(tools::ikos::run(
+                &engine,
+                &sources,
+                compile_db.as_ref(),
+                &ikos_scratch,
+                cli.jobs,
+                &table,
+            )),
+            None => runs.push(ToolRun::skipped(
+                tools::ikos::tool(),
+                "not installed — run scripts/setup-ikos.sh (needs ikos, clang-14, llvm-as-14)",
+            )),
+        }
+    } else {
+        runs.push(ToolRun::skipped(
+            tools::ikos::tool(),
+            "--ikos not given; nothing was proved safe or unsafe",
+        ));
+    }
+
     // Only findings from engines that actually completed may enter the report.
     let raw: Vec<_> = runs
         .iter()
@@ -296,13 +334,16 @@ fn main() -> Result<()> {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&report.render_json())?);
     } else {
-        print!("{}", report.render_text(cli.verbose, cli.all));
+        print!("{}", report.render_text(cli.verbose, cli.all, cli.show_unproven));
     }
 
     // Only clean up an index we created ourselves; an explicit --ctu-dir is
     // the user asking to keep it.
     if cli.ctu && cli.ctu_dir.is_none() {
         let _ = std::fs::remove_dir_all(&ctu_scratch);
+    }
+    if cli.ikos {
+        let _ = std::fs::remove_dir_all(&ikos_scratch);
     }
 
     if let Some(required) = &cli.require_cwe {
