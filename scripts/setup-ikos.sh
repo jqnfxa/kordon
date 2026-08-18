@@ -119,13 +119,20 @@ say "Building IKOS (${JOBS} jobs) — expect tens of minutes"
 mkdir -p "${SRC_DIR}/build"
 cd "${SRC_DIR}/build"
 
-# Both LLVM 14 and 18 are installed, so the LLVM/Clang cmake packages must be
-# named explicitly. Left to itself, find_package picks whichever it finds first
-# and the build fails deep in a header with no useful message.
+# IKOS does not use find_package(LLVM) from LLVM's own cmake package -- it
+# ships cmake/FindLLVM.cmake, which locates llvm-config with find_program. So
+# LLVM_DIR and Clang_DIR are ignored; the variable that decides everything is
+# LLVM_CONFIG_EXECUTABLE. With both 14 and 18 installed, leaving it unset finds
+# /usr/bin/llvm-config (18) and the configure stops at "LLVM 14 is required".
+#
+# It is also a CACHE variable, so a build directory configured once against the
+# wrong LLVM keeps it forever. Wipe the cache rather than trusting -D to win.
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
+
 cmake -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
       -DCMAKE_BUILD_TYPE=Release \
-      -DLLVM_DIR="${LLVM_ROOT}/lib/cmake/llvm" \
-      -DClang_DIR="${LLVM_ROOT}/lib/cmake/clang" \
+      -DLLVM_CONFIG_EXECUTABLE="${LLVM_ROOT}/bin/llvm-config" \
       ..
 
 make -j"${JOBS}"
