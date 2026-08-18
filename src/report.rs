@@ -266,8 +266,56 @@ impl<'a> Report<'a> {
             for (check, count) in by_check {
                 out.push_str(&format!("    {count:>6}  {check}\n"));
             }
+            out.push_str(&self.render_risk_concentration(&risk_patterns));
         }
 
+        out
+    }
+
+    /// Where the risk-pattern findings pile up.
+    ///
+    /// A flat total is not actionable: 7 000 findings is a number to despair at,
+    /// while "half of them are in 17 of 401 files, and the largest is a vendored
+    /// raw-image decoder" is two or three decisions. Measured on a real corpus,
+    /// these findings are heavily clustered, and the concentration is usually
+    /// third-party or generated code that a reader may want to exclude outright.
+    fn render_risk_concentration(&self, risk: &[&MergedFinding]) -> String {
+        let mut by_file: BTreeMap<&std::path::Path, usize> = BTreeMap::new();
+        for m in risk {
+            *by_file.entry(m.primary.file.as_path()).or_default() += 1;
+        }
+        if by_file.len() < 2 {
+            return String::new();
+        }
+
+        let mut ranked: Vec<(&std::path::Path, usize)> = by_file.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+        // How few files account for half of them -- the number that says
+        // whether excluding a handful would help.
+        let half = risk.len() / 2;
+        let mut running = 0usize;
+        let mut files_for_half = 0usize;
+        for (_, n) in &ranked {
+            running += n;
+            files_for_half += 1;
+            if running >= half {
+                break;
+            }
+        }
+
+        let mut out = format!(
+            "\n  Concentrated: half of them are in {} of {} file(s). Excluding vendored or\n               generated code here is usually the shortest route to a readable report:\n",
+            files_for_half,
+            ranked.len()
+        );
+        for (path, n) in ranked.iter().take(5) {
+            let name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            out.push_str(&format!("    {n:>6}  {name}\n"));
+        }
         out
     }
 

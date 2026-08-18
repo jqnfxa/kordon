@@ -111,6 +111,48 @@ effects and the check finds causes. That is a property of the measurement.
 **Remaining non-401 misses: 61, of which CWE-119 is 43 (70%).** That is now the
 whole game, and it is precisely what abstract interpretation addresses.
 
+## The 42:1 ratio was measuring the wrong thing
+
+Splitting it by what the report actually shows:
+
+| tier | findings | positions found | ratio |
+|---|---|---|---|
+| **detailed in the report** | 324 | 78 | **4.2:1** |
+| summarized low tier | 7 098 | +89 more | — |
+
+The detailed report is not noisy. What is true instead is that **89 real
+positions are only reachable through the summarized tier** — including every
+CWE-191 (49) and every CWE-190 (17), because Kordon's own checks are low
+confidence by design: intent is undecidable, so they can never be promoted.
+
+So the problem is not "too much noise in the report", it is "more than half the
+detections are in the part nobody reads". Cutting checks would make it worse:
+the only source of those 49 CWE-191 positions is a check that emits 1 868
+findings.
+
+What does help is that the low tier is heavily **clustered**: half of its 7 098
+findings sit in 17 of 401 files, and the largest single contributor is
+`dcraw_loader.cpp` with 1 107 — a vendored raw-image decoder. The report now
+says so, because "7 000 findings" is a number to despair at while "half are in
+17 files, the biggest of which is third-party" is two or three decisions.
+
+Per-check yield, measured, for anyone tempted to prune:
+
+| check | findings | positions | covers still-open defects |
+|---|---|---|---|
+| `clang-analyzer-deadcode.DeadStores` | 144 | 46 | 29 |
+| `unreadVariable` | 121 | 26 | 7 |
+| `kordon-unsigned-subtraction` | 1 868 | 49 | 0 |
+| `kordon-unsigned-addition` | 3 265 | 17 | 0 |
+| `pro-bounds-pointer-arithmetic` | 3 798 | 15 | 7 |
+| `cppcoreguidelines-init-variables` | 1 500 | 3 | 7 |
+| `cppcoreguidelines-special-member-functions` | 985 | **0** | **0** |
+
+`special-member-functions` is the one clear candidate for removal — 985 findings,
+nothing matched, nothing covered — but it is also the only check for the
+Rule-of-Five double-free class, which this corpus happens not to contain. That
+is the general difficulty with pruning on one corpus.
+
 ## The precision problem — the biggest thing left
 
 Comparing a full run on the broken tree against one on the corrected tree
