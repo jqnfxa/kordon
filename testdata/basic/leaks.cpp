@@ -118,8 +118,15 @@ int use_after_free()
     return *value;
 }
 
-// CWE-762: allocated with new[], released with free(). Both "free" the memory,
-// but the routines are mismatched.
+// CWE-763: allocated with new[], released with free(). Both "free" the memory,
+// but the routines are mismatched, so the release is of a pointer the C
+// allocator never handed out.
+//
+// MITRE offers two classes for this and they overlap: 762 is the narrow one
+// ("a release function not compatible with the function originally used to
+// allocate"), 763 the broader one that also covers calling the wrong release
+// function. Requirements lists in this domain name 763, so that is the default;
+// --cwe-map flips it in one rule.
 void mismatched_deallocator()
 {
     int *values = new int[4];

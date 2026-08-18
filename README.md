@@ -73,7 +73,7 @@ codebase.
 The corpus doubles as a configuration check:
 
 ```bash
-kordon testdata/basic --require-cwe 369,401,415,416,476,563,762
+kordon testdata/basic --require-cwe 369,401,415,416,476,563,763
 ```
 
 This exits non-zero if any listed class stops being detected. Without it, a

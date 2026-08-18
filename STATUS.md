@@ -221,7 +221,17 @@ Grouped by whether they can be engineered away.
   reference tool's RAII false positives. Kordon targets the cause instead
   (`kordon-manual-ownership-flag`, 5 class-level findings, silent on the fixed
   tree). This will never score well against a line-keyed ground truth.
-- **CWE-763 0/4, CWE-415 0/1, CWE-369 2/3** — small tail, uninvestigated.
+- ~~CWE-763 0/4~~ **— resolved, it was a mapping choice, not a miss.** All four
+  positions are detected at the exact line by
+  `clang-analyzer-unix.MismatchedDeallocator`; Kordon labelled them 762. The
+  code is `x = new bbf_data; ... free(x)`, which both classes describe: 762 is
+  the narrow one, 763 the broader one that also covers calling the wrong
+  release function. Requirements in this domain name 763, and the ground truth
+  records them as 763, so that is now the default. `--cwe-map` flips it back in
+  one rule.
+- ~~CWE-415 0/1~~ **— confirmed false positive by the codebase author**, with
+  sanitizers agreeing. Not a gap; the correct behaviour is to stay silent.
+- **CWE-369 2/3** — small tail, uninvestigated.
 - **Guard shapes the CWE-191 matcher cannot see**: a precondition validated by
   an early exit (`if (a > b) throw; ... b - a`). Needs dataflow. IKOS was tested
   on exactly this and still warns, under both `interval` and `dbm`.
@@ -261,8 +271,7 @@ cannot simply be deleted.
 
 - pkta shows 51 files failing under clang-tidy in batch that compile cleanly
   individually with their exact database flags. Cause not established.
-- CWE-762 vs 763 for `unix.MismatchedDeallocator` — worth 4 positions; needs a
-  decision on which the requirements name.
+(The 762-vs-763 question is settled — see the detection-gaps section.)
 
 ## Next steps, roughly in order
 

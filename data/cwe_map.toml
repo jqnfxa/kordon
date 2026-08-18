@@ -88,11 +88,14 @@ id = 762
 name = "Mismatched Memory Management Routines"
 tier = 1
 
-# Sibling of 762. Prior ACL work mapped unix.MismatchedDeallocator here because
-# its requirements list named 763; Kordon maps that checker to 762, which is
-# what it literally detects (new[]/free() mismatch). 763 stays in the catalog
-# for findings that really are "free of a pointer that was never the block
-# start". Open question -- confirm which the requirements actually want.
+# Resolved, having been an open question since the first session. The reference
+# codebase does `x = new bbf_data;` then `free(x)`. Both classes describe it:
+# 762 is the precise one ("a release function not compatible with the function
+# originally used to allocate"), while 763 is broader and covers calling the
+# wrong release function as well. Requirements lists in this domain name 763,
+# and the ground truth records these four positions as 763, so that is what
+# unix.MismatchedDeallocator maps to. A project preferring the narrower class
+# only has to override this one rule with --cwe-map.
 [[cwe]]
 id = 763
 name = "Release of Invalid Pointer or Reference"
@@ -274,7 +277,7 @@ confidence = "high"
 [[rule]]
 tool = "clang-tidy"
 check = "clang-analyzer-unix.MismatchedDeallocator"
-cwe = 762
+cwe = 763
 confidence = "high"
 
 [[rule]]
@@ -909,7 +912,7 @@ confidence = "high"
 [[rule]]
 tool = "cppcheck"
 check = "mismatchAllocDealloc"
-cwe = 762
+cwe = 763
 confidence = "high"
 
 [[rule]]
