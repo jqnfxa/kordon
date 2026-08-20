@@ -396,6 +396,30 @@ same object being subscripted. `for (i = 0; i < v.size(); ++i) v[i]` is safe by
 construction, and without that clause one file of `push_back(list[i])` loops
 contributed 55 findings on its own -- more than the whole check now emits.
 
+### Measured end to end, not just standalone (full CTU run, 452 TUs)
+
+The standalone clang-query scan and the integrated run agree closely: 52
+positions scanning alone, **48 in the full run** (57 raw findings). What the
+integrated run adds is the honest recall delta:
+
+| | exact hits on the 86 CWE-119 positions |
+|---|---|
+| without the new check | 18/86 |
+| with it | **20/86** |
+
+**+2.** Six of the eight ground-truth positions it finds -- the whole
+`vector.cpp` family -- were already covered by `pro-bounds-*`. So the check's
+value is not recall. It is that those positions are now also held by something
+that moves -48% between the broken and corrected trees, instead of only by
+something that moves -1%.
+
+It did **not** displace `pro-bounds-*`. Re-measured with the new check in
+place, 16 ground-truth positions are still covered by `pro-bounds-*` and
+nothing else -- the same 16 as before, none of them overlapping the new check.
+3341 findings for 16 exclusive positions, a 209:1 ratio on its own. The
+precision problem is unchanged; this check does not solve it, it just shows the
+shape of a check that could.
+
 Note on ground-truth quality: **76 of the 86 statements are byte-identical in
 the corrected tree.** For the vector/matrix family the class was rewritten
 around them, but a line-keyed recall score against this list is measuring
