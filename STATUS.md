@@ -358,6 +358,101 @@ cannot simply be deleted.
   individually with their exact database flags. Cause not established.
 (The 762-vs-763 question is settled — see the detection-gaps section.)
 
+## CWE-119: the parallel-extent check (2026-08-20)
+
+The ground truth's 86 CWE-119 positions break down by shape:
+
+| shape | count | example |
+|---|---|---|
+| constant index | 29 | `w[0] = (R(2,1) - R(1,2)) / 2.0;` |
+| single subscript | 22 | `while (m_ptrack[m_end] == NULL && m_end >= 0)` |
+| two containers, same index | 20 | `m_data[i] += v[i];` |
+| operator() on two objects | 8 | `res(i,m) += a(k,i) * blc(k,m);` |
+| mixed indices | 5 | `res[i] += m_data[i * m_col + j] * v[j];` |
+
+`kordon-unchecked-parallel-extent` targets the third and part of the fourth.
+The defect and its fix, both from the reference tree:
+
+```cpp
+// broken                                fixed
+assert(m_length == v.m_length);          assert(m_length == v.m_length);
+                                         if (v.m_length < m_length) return;
+for (int i = 0; i < m_length; i++)       for (int i = 0; i < n; ++i)
+    m_data[i] += v[i];                       m_data[i] += v[i];
+```
+
+Measured across 452 TUs: **52 positions broken / 27 corrected (-48%)**, against
+`pro-bounds-pointer-arithmetic`'s 2326 findings moving -1%. Responsiveness is
+the quality signal, and this is the first bounds check to show it.
+
+Recall against the line-keyed ground truth is only 8/86 exact, because it
+targets one of five shapes. That understates it: it also found
+`Vector::operator-=` (the twin of a listed defect, unlisted) and
+`SparseVector::colMult`, where the index written into the caller's vector comes
+from stored data (`pos = m_ppos[i]`) and is bounded by nothing at all.
+
+**The exemption that carries the precision** is dropping loops bounded by the
+same object being subscripted. `for (i = 0; i < v.size(); ++i) v[i]` is safe by
+construction, and without that clause one file of `push_back(list[i])` loops
+contributed 55 findings on its own -- more than the whole check now emits.
+
+Note on ground-truth quality: **76 of the 86 statements are byte-identical in
+the corrected tree.** For the vector/matrix family the class was rewritten
+around them, but a line-keyed recall score against this list is measuring
+something noisier than it looks.
+
+## Clang SA does not model allocation failure (2026-08-20)
+
+Measured on clang 18.1.3, with each masking bug removed in turn:
+
+| case | reported |
+|---|---|
+| `int *p = nullptr; *p = 1;` | yes, `core.NullDereference` |
+| `p = malloc(4); *p = 1;` | **no** |
+| `p = new (std::nothrow) int; *p = 1;` | **no** |
+| `p = malloc(4); if (p == nullptr) { *p = 1; }` | yes |
+
+The analyzer knows the pointer can be null -- it follows the branch when the
+code forces it -- but never proactively splits state on allocation failure. So
+an unchecked allocation and a correctly guarded one are indistinguishable, and
+the CWE-252/476/690 fallible-init chain is unreachable by the configured
+engines. Silence on a guarded `if (v.isNullPointer()) return;` is not the guard
+being understood.
+
+Getting this took three fixtures: the first reported an uninitialized read and
+the second a leak, each masking the null path, because Clang SA stops at the
+first bug on a path.
+
+## CodeChecker: evaluated, not wired (2026-08-20)
+
+Installed 6.28.2 in `.venv-cc/` (`pip install codechecker`). It works, and
+`CodeChecker parse -e json` gives a clean schema: `checker_name`,
+`analyzer_name`, `file.path`, `line`, `message`, `report_hash`. No CWE, so the
+mapping table still does that work. Check ids are as predicted: clangsa bare
+(`core.NullDereference`), cppcheck prefixed (`cppcheck-noCopyConstructor`).
+
+Three of its four analyzers are the ones Kordon already drives directly. The
+one addition is **gcc `-fanalyzer`**, and it has two problems:
+
+- **The compile database is clang-specific.** It carries
+  `-fsanitize=unsigned-integer-overflow`, `-fsanitize-ignorelist=` and
+  `-fsanitize-recover=`, none of which g++ accepts, so every TU fails to
+  compile. Stripping those three makes it work. Any future non-clang engine
+  will hit this, so flag filtering belongs in the orchestrator, not in a script.
+- **It is slow**: 438 s for 22 translation units, roughly 2.5 h extrapolated to
+  the full tree.
+
+What it earns, measured on `modules/math/src`: 20 reports, 13 in-tree
+positions, **9 of them not reported by Kordon**, all in the uninit family
+(CWE-457/908) -- the class with the weakest static story. Against that, its
+messages are often `use of uninitialized value '<unknown>'`, and one of the
+nine (`vect3d.cpp:138`) points at a function that is genuinely broken for a
+different reason than gcc states: `operator-` performs `tmp += v2`.
+
+Verdict: worth wiring as an opt-in runner for the uninit class specifically,
+not as a default engine. Its unique contribution is real but narrow and
+expensive.
+
 ## Next steps, roughly in order
 
 1. ~~Re-run the full ACL tree with CTU.~~ **Done** — 34.3%, see above.
