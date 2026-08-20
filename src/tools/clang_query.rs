@@ -72,6 +72,9 @@ pub enum Exemption {
     /// Assembled whole for the same reason, and exempting only *extent* tests
     /// rather than any mention of the parameter.
     ConstantIndex,
+    /// Assembled whole: the same guards as `ArithmeticGuard`, over a left
+    /// operand narrowed to a container-extent accessor.
+    ExtentUnderflow,
 }
 
 impl QueryCheck {
@@ -85,22 +88,25 @@ impl QueryCheck {
         if self.exemption == Exemption::ConstantIndex {
             return constant_index_matcher();
         }
+        if self.exemption == Exemption::ExtentUnderflow {
+            return extent_underflow_matcher();
+        }
         let mut m = String::from(self.base);
         match self.exemption {
             Exemption::None => {}
             Exemption::ArithmeticGuard => {
-                for shape in GUARD_SHAPES {
-                    m.push_str(", unless(");
-                    m.push_str(&guard_clause(shape));
-                    m.push(')');
-                }
-                m.push_str(", unless(");
-                m.push_str(LOOP_INIT_GUARD);
-                m.push(')');
+                append_arithmetic_guards(&mut m);
+                // A container extent on the left is 20x more likely to be a
+                // real defect, so it belongs to EXTENT_UNDERFLOW and is
+                // excluded here rather than reported twice at two tiers.
+                m.push_str(&format!(
+                    ", unless(hasLHS(ignoringParenImpCasts({EXTENT_CALL})))"
+                ));
             }
-            Exemption::IndexOrder | Exemption::ParallelExtent | Exemption::ConstantIndex => {
-                unreachable!("handled above")
-            }
+            Exemption::IndexOrder
+            | Exemption::ParallelExtent
+            | Exemption::ConstantIndex
+            | Exemption::ExtentUnderflow => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -698,6 +704,83 @@ pub const UNCHECKED_CONSTANT_INDEX: QueryCheck = QueryCheck {
 establishes that it is that large -- neither a test of its extent nor a call that sets it",
 };
 
+/// Methods that return a container's extent.
+///
+/// `x.width() - 1` is a different proposition from `n - 1`: the extent of an
+/// empty container is 0, and 0 - 1 on an unsigned type is the type maximum.
+/// A plain variable named `n` carries no such invariant.
+const EXTENT_CALL: &str = "cxxMemberCallExpr(callee(cxxMethodDecl(hasAnyName(\
+\"width\", \"height\", \"bands\", \"size\", \"length\", \"rows\", \"cols\", \"count\", \
+\"getWidth\", \"getHeight\", \"getRows\", \"getCols\", \"getBands\"))))";
+
+/// Append the guards that establish an operand cannot underflow.
+///
+/// Shared so the general and extent-specific underflow checks cannot drift
+/// apart: they must exempt exactly the same ways of writing "I checked".
+fn append_arithmetic_guards(m: &mut String) {
+    for shape in GUARD_SHAPES {
+        m.push_str(", unless(");
+        m.push_str(&guard_clause(shape));
+        m.push(')');
+    }
+    m.push_str(", unless(");
+    m.push_str(LOOP_INIT_GUARD);
+    m.push(')');
+}
+
+/// Build the extent-underflow matcher: the general shape, narrowed to a
+/// container-extent accessor on the left, and guarded identically.
+fn extent_underflow_matcher() -> String {
+    let mut m = format!(
+        "binaryOperator(hasOperatorName(\"-\"), \
+hasType(isUnsignedInteger()), \
+hasRHS(ignoringParenImpCasts(integerLiteral())), \
+hasLHS(ignoringParenImpCasts({EXTENT_CALL})), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation())"
+    );
+    append_arithmetic_guards(&mut m);
+    m.push(')');
+    m
+}
+
+/// A container's extent, minus a literal, on an unsigned type.
+///
+///     roiIn = Data2DROI(0, dataIn.width() - 1, 0, dataIn.height() - 1);
+///
+/// If the image is empty, `width()` is 0 and `0 - 1` is `SIZE_MAX`. The result
+/// is passed straight into an ROI that then bounds a loop.
+///
+/// This is the same expression shape as `kordon-unsigned-subtraction` but with
+/// the left operand narrowed to an extent accessor, and the difference in
+/// precision is the reason it exists as its own check. Measured on the
+/// reference corpus against the defects its maintainers actually fixed:
+///
+/// | left operand | positions | real defects | ratio |
+/// |---|---|---|---|
+/// | an extent accessor | 46 | 21 | **2:1** |
+/// | anything else | 332 | 8 | 41:1 |
+///
+/// A twentyfold difference, and 2:1 beats the ratio of Kordon's whole
+/// high-confidence tier. `n - 1` on a plain variable carries no invariant; an
+/// extent has a documented one, namely that an empty container reports 0.
+///
+/// Reported at medium confidence rather than high because it **cannot confirm
+/// a fix**: on the corrected tree the expression is still there (45 to 41,
+/// -9%), since the correction is a precondition validated elsewhere in the
+/// function. That is the documented CWE-190/191 limitation, not a fault in the
+/// matcher -- the check is well targeted at defect *sites*, and says nothing
+/// about whether the site has since been guarded at a distance.
+pub const EXTENT_UNDERFLOW: QueryCheck = QueryCheck {
+    id: "kordon-extent-underflow",
+    base: "", // built by matcher(); see Exemption::ExtentUnderflow above
+    exemption: Exemption::ExtentUnderflow,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "a container's extent minus a literal, on an unsigned type, with no guard that \
+the container is non-empty; an empty container reports 0 and 0 - 1 is the type maximum",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -706,6 +789,7 @@ pub const CHECKS: &[QueryCheck] = &[
     INDEX_USED_BEFORE_CHECK,
     UNCHECKED_PARALLEL_EXTENT,
     UNCHECKED_CONSTANT_INDEX,
+    EXTENT_UNDERFLOW,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1070,6 +1154,28 @@ Match #2:\n\n\
         // operator[] is deliberately out: including it doubled ground-truth
         // reach but took specificity from -81% to -13%.
         assert!(!m.contains("\"[]\""));
+    }
+
+    #[test]
+    fn extent_underflow_and_general_subtraction_partition_the_shape() {
+        let ext = EXTENT_UNDERFLOW.matcher();
+        let gen = UNSIGNED_SUBTRACTION.matcher();
+        // The specific check requires an extent accessor on the left; the
+        // general one must exclude exactly that, or every extent site is
+        // reported twice, at two different confidences.
+        assert!(ext.contains("hasLHS(ignoringParenImpCasts(cxxMemberCallExpr"));
+        assert!(gen.contains("unless(hasLHS(ignoringParenImpCasts(cxxMemberCallExpr"));
+        // Both must recognise the same accessors, or sites fall between them.
+        for name in ["\"width\"", "\"height\"", "\"size\"", "\"getRows\""] {
+            assert!(ext.contains(name), "extent check missing {name}");
+            assert!(gen.contains(name), "general check missing {name}");
+        }
+        // And both must exempt the same guards, or a guarded site reported by
+        // neither becomes a guarded site reported by one.
+        assert_eq!(
+            ext.matches("equalsBoundNode").count(),
+            gen.matches("equalsBoundNode").count()
+        );
     }
 
     #[test]

@@ -732,6 +732,18 @@ confidence = "low"
 # `if (roi.left() > roi.right()) ACL_THROW(...);` before `right() - left() + 1`
 # -- which no AST matcher can see. Treat CWE-190 findings as "this expression
 # can overflow if unvalidated", not as "this is unvalidated".
+
+# Medium, not low: narrowing the left operand to a container extent takes this
+# from 41:1 to 2:1 against defects the reference maintainers actually fixed --
+# better than the whole high-confidence tier. Not high, because it cannot
+# confirm a fix: the corrected tree still contains the expression (-9%), since
+# the correction is a precondition validated elsewhere in the function.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-extent-underflow"
+cwe = 191
+confidence = "medium"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-unsigned-addition"
