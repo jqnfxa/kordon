@@ -687,6 +687,10 @@ check = "cppcoreguidelines-pro-bounds-pointer-arithmetic"
 cwe = 119
 confidence = "low"
 
+# Off by default since 2026-08-20 -- 622 findings on the reference corpus, none
+# of them on a defect its maintainers fixed, and identical counts on the broken
+# and corrected trees. The mapping is kept so that opting back in via --checks
+# still produces classified results rather than unmapped ones.
 [[rule]]
 tool = "clang-tidy"
 check = "cppcoreguidelines-pro-bounds-array-to-pointer-decay"

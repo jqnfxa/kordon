@@ -70,8 +70,15 @@ clang-analyzer-optin.cplusplus.UninitializedObject,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
 cppcoreguidelines-pro-bounds-pointer-arithmetic,\
-cppcoreguidelines-pro-bounds-constant-array-index,\
-cppcoreguidelines-pro-bounds-array-to-pointer-decay";
+cppcoreguidelines-pro-bounds-constant-array-index";
+
+// `cppcoreguidelines-pro-bounds-array-to-pointer-decay` was here and was
+// removed. Measured on the reference corpus: 622 findings, zero of which
+// landed on a defect its maintainers fixed, zero exclusive coverage of any
+// ground-truth position, and identical counts on the broken and corrected
+// trees (0% change where ~226 defects were fixed). It flags every array
+// passed to a function -- a MISRA style rule, not a defect detector. It was
+// 9% of the low tier and cost nothing to remove.
 
 /// Default trust in a clang-tidy check, by family.
 ///
