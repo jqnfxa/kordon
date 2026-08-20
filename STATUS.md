@@ -180,7 +180,101 @@ nothing matched, nothing covered — but it is also the only check for the
 Rule-of-Five double-free class, which this corpus happens not to contain. That
 is the general difficulty with pruning on one corpus.
 
-## The precision problem — the biggest thing left
+## The precision problem — measured properly (2026-08-20)
+
+### The 42:1 headline was measuring against the wrong ground truth
+
+The reference tool's report is not a list of defects; it is a list of one
+tool's warnings. Scoring against it rewards agreeing with another
+shape-counter. A better basis is available: **the defects the maintainers
+actually acted on**, found by checking whether the site or its immediate
+context changed between `acl_raw` and `acl_fix`.
+
+Of 384 ground-truth positions, **176 were acted on and 203 were not.** The
+context window matters -- comparing the statement alone misses fixes made by
+adding a guard around it, which is how the whole `vector.cpp` family was
+corrected. Sanity-checked against `vector.cpp:327`, a known guard-added fix.
+
+Against that basis the tool looks very different, and much better:
+
+| tier | findings | defects actually fixed | ratio |
+|---|---|---|---|
+| detailed by default (high+medium) | 339 | 81 | **4.2:1** |
+| summarized (low) | 7091 | 47 | **150:1** |
+
+**The default report was never the problem.** 4.2:1 is good. The problem was
+that 47 real defects were invisible behind 7091 low-confidence findings.
+
+### What does not work, measured
+
+Generic ranking of the low tier fails. Three signals were tested:
+
+| signal | lift |
+|---|---|
+| number of distinct checks stacked on one position | 2.2% -> 2.6% -> 0.0% (none) |
+| within 15 lines of a high/medium finding | 1.8% -> 4.1% (real, but on a hopeless base rate) |
+| how few findings the file has | 57:1 -> 26:1 for the sparsest bucket only |
+
+There is no metadata signal to rank on. Suppressing the noisiest file
+(`dcraw_loader.cpp`, 1106 low findings) would have cost 19 real positions.
+
+**Responsiveness splits cleanly by engine kind, and the existing tiering already
+tracks it.** Path-sensitive engines: DeadStores -82%, `unix.Malloc` -100%,
+`NullDereference` -58%, `UninitializedObject` -62%, but volumes of 12-173.
+AST matchers: pointer-arithmetic -3%, unsigned-addition -0%, narrowing -0%,
+array-to-pointer-decay 0%. The one responsive matcher is `init-variables` at
+-29%. The low tier is inert *by construction*; it is a risk register, and no
+tuning turns it into a defect list.
+
+### What does work: narrow a shape until its precision changes tier
+
+`x.width() - 1` and `n - 1` are the same expression and different propositions.
+An empty container reports 0, and 0 - 1 unsigned is the type maximum; a
+variable named `n` carries no such invariant. Splitting on that:
+
+| left operand | positions | defects actually fixed | ratio |
+|---|---|---|---|
+| a container-extent accessor | 46 | 21 | **2:1** |
+| anything else | 332 | 8 | 41:1 |
+
+Twentyfold, and 2:1 beats the entire high-confidence tier. Shipped as
+`kordon-extent-underflow` at medium confidence, excluded from the general
+check so no site is reported twice.
+
+### Net effect
+
+| | before | after |
+|---|---|---|
+| detailed report | 339 findings, 81 real | **404 findings, 103 real** |
+| ratio | 4.2:1 | **3.9:1** |
+| real defects buried in the low tier | 47 | **26** |
+| total in-scope findings | 7430 | 7001 (-6%) |
+
+More real defects visible and a better ratio at the same time -- because the
+gain came from re-tiering 21 defects that were already found, not from adding
+volume. `pro-bounds-array-to-pointer-decay` was also removed outright: 622
+findings, zero acted-on defects, zero exclusive coverage, 0% responsiveness.
+
+### What is left, and what it would cost
+
+The 26 still-buried defects sit behind these checks:
+
+| check | buried defects | low-tier volume | cost each |
+|---|---|---|---|
+| `pro-bounds-pointer-arithmetic` | 8 | 3782 | 472 |
+| `kordon-unsigned-addition` | 7 | 3191 | 455 |
+| `bugprone-narrowing-conversions` | 3 | 1623 | 541 |
+| `pro-bounds-constant-array-index` | 2 | 716 | 358 |
+
+`kordon-unsigned-addition` is ours and the obvious next target, but the
+narrowing that worked for subtraction does not transfer: restricting it to
+memory-relevant contexts (subscripts, allocation arguments) cut volume 90% and
+kept only 3 of its 26 exclusive ground-truth positions. Its remaining hits are
+`roi.right() - roi.left() + 1`, where the `+ 1` is incidental and the real
+hazard is the subtraction -- and 20 of those 26 positions were never acted on
+by the maintainers at all.
+
+## The precision problem — earlier framing, superseded above
 
 Comparing a full run on the broken tree against one on the corrected tree
 (`tmp/cov_raw.json` vs `tmp/cov_fix.json`), where ~226 defects were fixed:
