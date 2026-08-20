@@ -75,4 +75,51 @@ void Vec::add_over_own_extent(Vec &v)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Constant index: a parameter indexed at a fixed position.
+// ---------------------------------------------------------------------------
+
+class Mat {
+public:
+    double operator()(int r, int c) const { return m_data[r * m_cols + c]; }
+    int getRows() const { return m_rows; }
+    int getCols() const { return m_cols; }
+
+private:
+    double *m_data;
+    int m_rows;
+    int m_cols;
+};
+
+// Must be flagged: assumes R is at least 3x3, and says so nowhere.
+double trace3_unchecked(const Mat &R)
+{
+    return R(0, 0) + R(1, 1) + R(2, 2);
+}
+
+// Must stay silent: the extent is tested before use. This is the shape the
+// corrected reference code used.
+double trace3_checked(const Mat &R)
+{
+    if (R.getRows() < 3 || R.getCols() < 3) {
+        return 0.0;
+    }
+    return R(0, 0) + R(1, 1) + R(2, 2);
+}
+
+// Must stay silent: a test of the stored *value* is not a test of the extent,
+// but it must not be mistaken for one in either direction -- this function
+// checks the extent as well, so it is genuinely safe.
+double trace3_value_test(const Mat &R)
+{
+    if (R.getRows() < 3 || R.getCols() < 3) {
+        return 0.0;
+    }
+    double x = R(0, 0);
+    if (R(1, 1) < 0) {
+        x = -x;
+    }
+    return x;
+}
+
 }  // namespace kordon_probe

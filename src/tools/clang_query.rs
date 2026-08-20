@@ -69,6 +69,9 @@ pub enum Exemption {
     /// Not an exemption either: assembled whole, because all three clauses have
     /// to back-reference the same subscripted parameter.
     ParallelExtent,
+    /// Assembled whole for the same reason, and exempting only *extent* tests
+    /// rather than any mention of the parameter.
+    ConstantIndex,
 }
 
 impl QueryCheck {
@@ -78,6 +81,9 @@ impl QueryCheck {
         }
         if self.exemption == Exemption::ParallelExtent {
             return parallel_extent_matcher();
+        }
+        if self.exemption == Exemption::ConstantIndex {
+            return constant_index_matcher();
         }
         let mut m = String::from(self.base);
         match self.exemption {
@@ -92,7 +98,7 @@ impl QueryCheck {
                 m.push_str(LOOP_INIT_GUARD);
                 m.push(')');
             }
-            Exemption::IndexOrder | Exemption::ParallelExtent => {
+            Exemption::IndexOrder | Exemption::ParallelExtent | Exemption::ConstantIndex => {
                 unreachable!("handled above")
             }
             Exemption::LoopCounter => {
@@ -618,6 +624,80 @@ establishes that the subscripted parameter is at least as long; an assert does n
 it expands to nothing under NDEBUG",
 };
 
+/// Methods that report an object's extent, and methods that establish it.
+///
+/// Split because they exempt for different reasons: reading the extent in a
+/// condition means the code checked, setting it means the code guaranteed.
+const EXTENT_READERS: &str = "\"getRows\", \"getCols\", \"rows\", \"cols\", \"size\", \
+\"length\", \"width\", \"height\", \"getWidth\", \"getHeight\", \"count\"";
+const EXTENT_SETTERS: &str = "\"init\", \"resize\", \"reserve\", \"assign\", \
+\"allocate\", \"create\", \"setSize\", \"alloc\"";
+
+/// Build the unchecked-constant-index matcher.
+fn constant_index_matcher() -> String {
+    let on_same = "on(declRefExpr(to(parmVarDecl(equalsBoundNode(\"p\")))))";
+    format!(
+        "cxxOperatorCallExpr(\
+hasOverloadedOperatorName(\"()\"), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasArgument(0, declRefExpr(to(parmVarDecl().bind(\"p\")))), \
+hasArgument(1, integerLiteral()), \
+unless(hasAncestor(functionDecl(hasDescendant(ifStmt(hasCondition(hasDescendant(\
+cxxMemberCallExpr(callee(cxxMethodDecl(hasAnyName({readers}))), {on_same})))))))), \
+unless(hasAncestor(functionDecl(hasDescendant(\
+cxxMemberCallExpr(callee(cxxMethodDecl(hasAnyName({setters}))), {on_same})))))\
+)",
+        readers = EXTENT_READERS,
+        setters = EXTENT_SETTERS
+    )
+}
+
+/// A parameter is indexed at a fixed position that nothing establishes it has.
+///
+/// The shape, from the reference codebase:
+///
+///     void Rotation::fromRotationToAxisAngle(Matrix &R, Vector &w)
+///     {
+///         w.init(3);                                  // w's extent guaranteed
+///         ...
+///         w[0] = (R(2,1) - R(1,2)) / 2.0;             // R's extent is not
+///     }
+///
+/// `w` is fine -- the function sizes it before use. `R` is the hazard: it is
+/// indexed at `(2,1)` on the assumption it is at least 3x3, and nothing in the
+/// function says so. The corrected tree adds exactly the missing test:
+///
+///     if (R.getRows() < 3 || R.getCols() < 3) { return; }
+///
+/// So the two exemptions are "the code read this parameter's extent in a
+/// condition" and "the code set this parameter's extent". Both must name the
+/// bound parameter.
+///
+/// **Exempting any `if` that merely mentions the parameter is far too loose**,
+/// and measuring caught it: the same file contains `if (R(2,1) < 0) y = -y;`,
+/// a test of the stored *value*, which silenced all 25 findings in the file.
+/// Requiring an extent accessor specifically is what makes the check work.
+///
+/// Restricted to `operator()` on purpose. Extending it to `operator[]` doubled
+/// the ground-truth positions reached, from 3 to 6, but took specificity from
+/// -81% to -13% and volume from 21 to 129 -- because a fixed subscript on a
+/// one-dimensional container is usually a genuine constant, not an assumption.
+/// Recall bought at that price is the shape-counting this project rejects.
+///
+/// Measured across 452 translation units: **21 positions on the broken tree,
+/// 4 on the corrected one (-81%)**, the sharpest discrimination of any bounds
+/// check here.
+pub const UNCHECKED_CONSTANT_INDEX: QueryCheck = QueryCheck {
+    id: "kordon-unchecked-constant-index",
+    base: "", // built by matcher(); see Exemption::ConstantIndex above
+    exemption: Exemption::ConstantIndex,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this parameter is indexed at a fixed position, and nothing in the function \
+establishes that it is that large -- neither a test of its extent nor a call that sets it",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -625,6 +705,7 @@ pub const CHECKS: &[QueryCheck] = &[
     ASSERT_ONLY_VALIDATION,
     INDEX_USED_BEFORE_CHECK,
     UNCHECKED_PARALLEL_EXTENT,
+    UNCHECKED_CONSTANT_INDEX,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -973,6 +1054,22 @@ Match #2:\n\n\
         // find silence it.
         assert!(m.contains("ifStmt"));
         assert!(!m.contains("conditionalOperator"));
+    }
+
+    #[test]
+    fn constant_index_exempts_extent_tests_not_value_tests() {
+        let m = UNCHECKED_CONSTANT_INDEX.matcher();
+        // The exemption must require reading the parameter's *extent*. A
+        // looser version that accepted any `if` mentioning the parameter was
+        // silenced by `if (R(2,1) < 0)` -- a test of the stored value -- and
+        // reported nothing at all on the file it was written for.
+        assert!(m.contains("getRows"));
+        assert!(m.contains("getCols"));
+        // Both exemptions must name the bound parameter.
+        assert_eq!(m.matches("equalsBoundNode(\"p\")").count(), 2);
+        // operator[] is deliberately out: including it doubled ground-truth
+        // reach but took specificity from -81% to -13%.
+        assert!(!m.contains("\"[]\""));
     }
 
     #[test]

@@ -425,6 +425,38 @@ the corrected tree.** For the vector/matrix family the class was rewritten
 around them, but a line-keyed recall score against this list is measuring
 something noisier than it looks.
 
+## CWE-119: the constant-index check (2026-08-20)
+
+Targets the largest remaining shape, 29 of the 86 ground-truth positions. The
+defect and its fix:
+
+```cpp
+void Rotation::fromRotationToAxisAngle(Matrix &R, Vector &w)
+{
+    w.init(3);                          // w's extent is guaranteed -- fine
+    ...
+    w[0] = (R(2,1) - R(1,2)) / 2.0;     // R's extent is not -- the hazard
+}
+// fix adds:  if (R.getRows() < 3 || R.getCols() < 3) { return; }
+```
+
+Two exemptions: the function *read* the parameter's extent in a condition, or
+*set* it. Both must name the bound parameter.
+
+**Exempting any `if` that mentions the parameter is far too loose.** The first
+version did, and reported nothing on the very file it was written for, because
+`if (R(2,1) < 0) y = -y;` -- a test of the stored value -- silenced all 25
+findings. Requiring an extent accessor is the whole check.
+
+Measured across 452 TUs: **21 positions broken / 4 corrected (-81%)**, the
+sharpest discrimination of any bounds check here.
+
+Restricted to `operator()` deliberately. Adding `operator[]` doubled
+ground-truth reach (3 to 6) but took specificity to -13% and volume from 21 to
+129, nearly all of it inert -- a fixed subscript on a one-dimensional container
+is usually a real constant, not an assumption. That is recall bought by
+shape-counting, which is the thing this project keeps rejecting.
+
 ## Clang SA does not model allocation failure (2026-08-20)
 
 Measured on clang 18.1.3, with each masking bug removed in turn:

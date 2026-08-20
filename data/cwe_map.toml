@@ -858,6 +858,15 @@ check = "kordon-unchecked-parallel-extent"
 cwe = 119
 confidence = "low"
 
+# Medium: unlike the parallel-extent case, a fixed index states an assumption
+# the programmer made explicitly. The -81% response between the broken and
+# corrected trees is the sharpest of any bounds check here.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unchecked-constant-index"
+cwe = 119
+confidence = "medium"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through
