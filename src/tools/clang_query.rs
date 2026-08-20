@@ -66,12 +66,18 @@ pub enum Exemption {
     /// Not an exemption: this check's matcher is assembled whole, because its
     /// two halves have to share a binding.
     IndexOrder,
+    /// Not an exemption either: assembled whole, because all three clauses have
+    /// to back-reference the same subscripted parameter.
+    ParallelExtent,
 }
 
 impl QueryCheck {
     pub fn matcher(&self) -> String {
         if self.exemption == Exemption::IndexOrder {
             return index_order_matcher();
+        }
+        if self.exemption == Exemption::ParallelExtent {
+            return parallel_extent_matcher();
         }
         let mut m = String::from(self.base);
         match self.exemption {
@@ -86,7 +92,9 @@ impl QueryCheck {
                 m.push_str(LOOP_INIT_GUARD);
                 m.push(')');
             }
-            Exemption::IndexOrder => unreachable!("handled above"),
+            Exemption::IndexOrder | Exemption::ParallelExtent => {
+                unreachable!("handled above")
+            }
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -537,12 +545,86 @@ pub const INDEX_USED_BEFORE_CHECK: QueryCheck = QueryCheck {
 && and || evaluate left to right, so the read happens first and the check comes too late",
 };
 
+/// Build the unchecked-parallel-extent matcher.
+///
+/// Assembled here rather than declared as a base string because the subscript
+/// and both exemptions have to name the same parameter, which needs one
+/// binding threaded through all three.
+fn parallel_extent_matcher() -> String {
+    // The subscripted object, bound so the exemptions can refer back to it.
+    let param = "declRefExpr(to(parmVarDecl().bind(\"p\")))";
+    let same_param = "declRefExpr(to(parmVarDecl(equalsBoundNode(\"p\"))))";
+    format!(
+        "cxxOperatorCallExpr(\
+hasOverloadedOperatorName(\"[]\"), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasArgument(0, {param}), \
+hasAncestor(forStmt(hasCondition(hasDescendant(memberExpr())))), \
+unless(hasAncestor(forStmt(hasCondition(hasDescendant({same_param}))))), \
+unless(hasAncestor(functionDecl(hasDescendant(\
+ifStmt(hasCondition(hasDescendant({same_param}))))))))"
+    )
+}
+
+/// A loop bounded by one object's extent subscripts another object that was
+/// never checked against it.
+///
+/// The shape, from the reference codebase:
+///
+///     void Vector::operator+=(Vector &v)
+///     {
+///         assert(m_length == v.m_length);
+///         for (int i = 0; i < m_length; i++)
+///             m_data[i] += v[i];          // v may be shorter than m_length
+///     }
+///
+/// The loop is bounded by `this` object's extent, but the body subscripts `v`,
+/// whose extent nothing establishes. `assert` is not a check -- it expands to a
+/// `conditionalOperator`, and to nothing at all under NDEBUG -- so under the
+/// shipped build a shorter `v` is read out of bounds.
+///
+/// The corrected tree fixes exactly this by adding a real test, which is what
+/// the second exemption looks for:
+///
+///     if (v.m_length < m_length) { return; }
+///
+/// Two exemptions carry the precision. The first drops loops bounded by the
+/// *same* object being subscripted -- `for (i = 0; i < v.size(); ++i) v[i]` is
+/// self-evidently safe, and without this clause a single file of
+/// `push_back(list[i])` calls contributed 55 findings. The second drops any
+/// function containing a real `if` that tests the subscripted parameter; since
+/// `assert` never expands to an `ifStmt`, an assert cannot silence the check.
+///
+/// Measured across 452 translation units: **52 positions on the broken tree,
+/// 27 on the corrected one (-48%)**, against `pro-bounds-pointer-arithmetic`'s
+/// 2326 findings that move -1% between the same two trees. It reaches defects
+/// the reference tool did not list, including `SparseVector::colMult`, where
+/// the index written into the caller's vector comes from stored data
+/// (`pos = m_ppos[i]`) and is bounded by nothing whatsoever.
+///
+/// Low confidence by construction: the two extents may be equal for reasons
+/// no local analysis can see -- built from a common source, or fixed by an
+/// invariant the caller maintains. What the check states is that nothing in
+/// this function establishes it.
+pub const UNCHECKED_PARALLEL_EXTENT: QueryCheck = QueryCheck {
+    id: "kordon-unchecked-parallel-extent",
+    base: "", // built by matcher(); see Exemption::ParallelExtent above
+    exemption: Exemption::ParallelExtent,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this loop is bounded by another object's extent, and nothing in this function \
+establishes that the subscripted parameter is at least as long; an assert does not count, \
+it expands to nothing under NDEBUG",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
     MANUAL_OWNERSHIP_FLAG,
     ASSERT_ONLY_VALIDATION,
     INDEX_USED_BEFORE_CHECK,
+    UNCHECKED_PARALLEL_EXTENT,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -876,6 +958,21 @@ Match #2:\n\n\
         for op in ["\">\"", "\">=\"", "\"!=\""] {
             assert!(m.contains(op), "guard operator {op} missing");
         }
+    }
+
+    #[test]
+    fn parallel_extent_exempts_self_bounded_loops_and_real_checks() {
+        let m = UNCHECKED_PARALLEL_EXTENT.matcher();
+        // Both exemptions must back-reference the *same* parameter that is
+        // subscripted. Unbound, they would exempt any enclosing loop and any
+        // `if` anywhere in the function, which silences the check entirely.
+        assert_eq!(m.matches("equalsBoundNode(\"p\")").count(), 2);
+        // The real-check exemption must insist on an `ifStmt`. `assert`
+        // expands to a conditionalOperator and to nothing at all under NDEBUG,
+        // so accepting one here would let the very shape this check exists to
+        // find silence it.
+        assert!(m.contains("ifStmt"));
+        assert!(!m.contains("conditionalOperator"));
     }
 
     #[test]

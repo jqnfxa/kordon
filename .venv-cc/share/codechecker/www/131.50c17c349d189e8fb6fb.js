@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkcodechecker=self.webpackChunkcodechecker||[]).push([[131],{83131(e,r,c){c.r(r),c.d(r,{default:()=>t});var u=c(20641);const n={},t=(0,c(66262).A)(n,[["render",function(e,r){var c=(0,u.g2)("router-view"),n=(0,u.g2)("v-container");return(0,u.uX)(),(0,u.Wv)(n,{id:"product",fluid:""},{default:(0,u.k6)(function(){return[(0,u.bF)(c)]}),_:1})}]])}}]);

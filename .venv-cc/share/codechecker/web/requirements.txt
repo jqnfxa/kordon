@@ -1,0 +1,24 @@
+# These requirements are exported via setup.py and become the install
+# dependencies of the published pip package.
+# Avoid pinning exact versions!
+# Use version ranges or upper bounds instead (e.g. limited to a major release)
+# to let users select a specific compatible version.
+
+Authlib~=1.6
+requests~=2.0  # Required by Authlib. Not installed automatically for some reason.
+lxml~=6.0
+sqlalchemy~=2.0
+alembic~=1.5
+portalocker~=3.0
+psutil~=7.0
+types-psutil~=7.0
+multiprocess~=0.70
+thrift~=0.22
+gitpython~=3.0
+PyYAML~=6.0
+types-PyYAML~=6.0
+sarif-tools~=3.0
+argcomplete~=3.0
+
+./api/py/codechecker_api/dist/codechecker_api.tar.gz
+./api/py/codechecker_api_shared/dist/codechecker_api_shared.tar.gz
