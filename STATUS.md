@@ -1059,37 +1059,63 @@ Verdict: worth wiring as an opt-in runner for the uninit class specifically,
 not as a default engine. Its unique contribution is real but narrow and
 expensive.
 
-## Next steps, roughly in order
+## Next steps, roughly in order (rewritten 2026-08-21)
 
-1. ~~Re-run the full ACL tree with CTU.~~ **Done** — 34.3%, see above.
-2. ~~Fix the 159/486 failing TUs.~~ **Done.** They were 212 sources absent from
-   `compile_commands.json` (186 under `tests/`), compiled with no flags. Kordon
-   now analyzes only what the build compiles and reports the rest as skipped.
-   Genuine failures: 5 of 274. Note the old "misses are in unanalyzed files"
-   proxy is no longer valid — with 5 failures, essentially all 184 remaining
-   misses are real analysis gaps.
-3. ~~CWE-191 is 0% and will stay 0%.~~ **Done — 49/52 (94%)** via
-   `kordon-unsigned-subtraction`, a clang-query AST matcher
-   (`src/tools/clang_query.rs`). Permanently low confidence: no layer resolves
-   intent, the sanitizer included (it flags a correct FNV-1a hash). Next for
-   this class is IKOS, which can close the two guard shapes the matcher
-   cannot see (early return, guarded call) because they need dataflow.
-4. **CWE-401 is 9/66 and is now the biggest addressable class** (57 misses).
-   Confirmed to be the manual-ownership-flag RAII pattern: `clear()` frees only
-   `if (m_data && m_flgAllocMemory)`, so a wrong flag skips the free —
-   the mirror image of the uninitialized-flag defect. `matrix.cpp:41` is the
-   destructor itself. Needs the per-class ownership summary from CLAUDE.md
-   (which raw-pointer members own, where they are released, when release can be
-   skipped). Not reachable by more inlining.
-5. **CWE-119 is 16/59** (43 misses), up from 0. Remaining are
-   `vector::operator[]` where proving the container can be empty needs
-   interprocedural range reasoning.
-6. Ingest CodeChecker output as an alternative runner — its cppcheck
-   integration prefixes ids (`cppcheck-arrayIndexOutOfBounds`) and its clangsa
-   ids are bare (`core.NullDereference`); the table's tool-independent fallback
-   already handles both.
+Items 1-3 of the old list are done and their notes have moved into the
+measurement sections above. What remains, with the reason each is where it is:
+
+1. **CWE-401 is 8% against acted-on defects and will not move by detection
+   work.** Its ground truth is dominated by leak-at-end-of-scope reports for
+   RAII locals -- confirmed false positives. The real defects in the class are
+   found, but reported per *class* (`kordon-manual-ownership-flag`) rather than
+   per line, so a line-keyed score cannot see them. The open work is the
+   per-class ownership summary from CLAUDE.md, and its value is suppressing
+   other engines' false leaks, not raising this number.
+
+2. **CWE-119 is 61% against acted-on defects, and is the only real detection
+   gap left.** The remaining misses are the constant-index-on-`operator[]`
+   family, measured and rejected: including it doubles ground-truth reach and
+   takes specificity from -81% to -13%. Anything further needs interprocedural
+   range reasoning -- proving a container can be empty, or that `arows % size
+   != 0`. IKOS was the hope and contributed nothing unique.
+
+3. **The low tier is 6724 findings hiding 27 acted-on defects.** Three ranking
+   signals were tested and all failed (stacked checks: no lift; proximity to a
+   high finding: 1.8% -> 4.1% on a hopeless base rate; file sparsity: helps
+   only the smallest bucket). The only thing that has ever worked is narrowing
+   a specific shape until its precision changes tier, which is what every
+   `kordon-` check here is. There is no general fix to find.
+
+4. **Dynamic layer: no coverage-guided input generation.** It reports what the
+   run command executes and nothing else. The directed-fuzzing handoff from
+   CLAUDE.md -- seed a fuzzer from the static findings Kordon cannot prove --
+   is unbuilt and is the only way to raise that ceiling.
+
+5. **`#ifdef` is still invisible.** 272 `#if`-family directives in the
+   reference tree, three symbols undefined in the analysed build. Needs
+   analyse-per-configuration and merge.
+
+6. Ingest CodeChecker as an alternative runner. Evaluated: three of its four
+   analyzers duplicate ours, and gcc `-fanalyzer` -- the one addition --
+   contributes 9 uninit positions but needs clang-only flags stripped from the
+   compile database and costs ~20s per TU.
+
 7. Dedup is line-exact; two engines reporting one defect on adjacent lines stay
    separate. Consider a small line window.
+
+## Where the numbers stand (2026-08-21, all checks in place)
+
+| | |
+|---|---|
+| coverage vs everything reported | 245/379 = **65%** |
+| coverage vs defects actually fixed | 131/176 = **74%** |
+| detailed report | 383 findings / 104 acted-on = **3.7:1** |
+| detailed tier, broken -> corrected | 383 -> 209 = **-45%** |
+| low tier | 6724 findings / 27 acted-on |
+
+Per CWE, against acted-on defects: 763/369/416 at 100%, 191 at 97%, 563 at 95%,
+190 at 86%, 457 and 476 at 83%, **119 at 61%**, **401 at 8%**, 415 a confirmed
+false positive where silence is correct.
 
 ## Macros and other hiders — measured
 
