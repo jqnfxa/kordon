@@ -551,6 +551,59 @@ ground-truth reach (3 to 6) but took specificity to -13% and volume from 21 to
 is usually a real constant, not an assumption. That is recall bought by
 shape-counting, which is the thing this project keeps rejecting.
 
+## CWE-401: what the ground truth actually contains (2026-08-20)
+
+Of the 86 CWE-401 positions, only 25 were acted on, and the list is dominated
+by positions on a closing brace `}` -- the reference tool reporting "leak at
+end of scope" for locals of RAII classes that free in their destructors. Those
+are the false positives already recorded here and confirmed by the codebase
+author. A line-keyed recall score against this class will stay low regardless
+of what Kordon does, and that is the right outcome.
+
+Two clusters in it are real, and they are different defects:
+
+**The manual ownership flag** (`matrix.cpp:41,59,157`, `vector.cpp:94,203`,
+all acted on). Ownership is tracked by a bool that can disagree with reality:
+
+```cpp
+void Vector::clear() {
+    m_length = 0;
+    if (m_data && m_flgAllocMemory) { delete[] m_data; }   // frees only if the flag agrees
+    m_data = NULL;
+    m_flgAllocMemory = false;
+}
+```
+
+while `init(double *data, int n, hardcopy=false)` sets `m_data = data;
+m_flgAllocMemory = false;`, aliasing memory the object does not own. A wrong
+flag is either a leak or a free of someone else's buffer. The corrected tree
+deletes the scheme entirely and holds a `unique_ptr`. Already covered by
+`kordon-manual-ownership-flag`, which reports it once per class rather than
+once per line -- which is why it scores zero against a line-keyed ground truth.
+
+**Reinit without free** -- shipped today as `kordon-reinit-without-free`, and
+the one CLAUDE.md predicted would need custom code. That prediction held:
+nothing in clang-tidy, Clang SA or cppcheck reports these sites, and Clang SA
+structurally cannot, because the leak requires two calls to the same method
+while it reasons about one path at a time.
+
+26 findings at 10 positions across 452 TUs. Four sampled, four genuine:
+`SparseVector::init`, `BmpImage::init`, `Tracker::make_sets`, and a guided
+filter's `init`, none of which release before allocating.
+
+The exemption had to match release-method names **as a substring**. With an
+exact list, `cmatchingcorner.cpp:35` -- `if (m_pPolinom) clearPolinom();`
+followed by the allocation, which is correct code -- was reported as a defect.
+
+### A matcher bug worth not repeating
+
+`allOf(binaryOperator(...), hasAncestor(...))` silently matches nothing.
+Written as direct arguments, `binaryOperator(..., hasAncestor(...))`, the same
+matcher works. It cost a full tree scan to notice, because the failure mode is
+a clean zero rather than an error, and a check that reports nothing looks
+exactly like a codebase with no defects. There is now a test asserting the
+assembled matcher contains no `allOf(`.
+
 ## The fallible-init chain: three formulations, none shipped (2026-08-20)
 
 Target was CWE-252 -> 476 -> 690, currently at zero coverage. Three matchers
