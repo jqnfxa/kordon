@@ -122,6 +122,61 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## CWE-563: splitting dead stores by what the store cost (2026-08-21)
+
+Measured on clang 18 rather than assumed. `clang-analyzer-deadcode.DeadStores`
+already discards the case that is idiomatic rather than wrong:
+
+| form | reported |
+|---|---|
+| `double w = 0.0;` overwritten | **no** |
+| `double w = 3.14159;` overwritten | **no** |
+| `int n = 0;` overwritten | **no** |
+| `double w = compute();` overwritten | yes, "during its initialization" |
+| `v = compute();` never read | yes, plain message |
+
+So the analyzer's own distinction is better than the syntactic one it is
+tempting to write. A rule keying on "does a type appear in front" would demote
+`double w = compute();` -- a genuinely wasted call -- purely for being a
+declaration, and would have to special-case constant initialisers back out
+again. Clang already asks the question that matters: was work thrown away.
+
+Mapped accordingly:
+
+- plain "Value stored to 'x' is never read" -> **high**. A value produced and
+  discarded, with no benign reading.
+- "during its initialization" -> **medium**. A wasted call, which may be a
+  deliberate default that a branch usually replaces.
+- `cppcheck redundantInitialization` -> **low**. The defensive-initializer case
+  by name.
+- `cppcheck unreadVariable` -> **low**, as before.
+
+On `modules/math` the detailed tier now moves **64 -> 9, -86%**, with high
+going to zero on corrected code.
+
+### `double w{}` is not a fix for this
+
+Value-initialisation and `= 0.0` are the same thing for a double, and neither
+is reported. `{}` is better style -- it refuses narrowing conversions and reads
+the same in generic code -- but it has no bearing on dead-store analysis. The
+only thing that removes the store is not writing it: declare at first use.
+
+### What the demotion of `unreadVariable` costs
+
+cppcheck uniquely catches the accumulator shape:
+
+```cpp
+for (int i = 0; i < 10; ++i) { sum += i * 10.0; var += i; }   // var never read
+return sum;
+```
+
+Clang reports nothing here; `unreadVariable` reports both the declaration and
+the compound assignment. That is a genuine defect and it now sits in the low
+tier. The trade is still right on measurement -- across the whole tree
+`unreadVariable` reaches 36 acted-on defects and is the only check reaching
+none of them exclusively, and it rises 72% on corrected code -- but the cost is
+real and worth recording rather than discovering later.
+
 ## The dynamic layer (2026-08-21)
 
 Built as a separate layer from `src/tools`, with its own report section above

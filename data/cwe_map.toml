@@ -464,6 +464,30 @@ check = "clang-analyzer-security.insecureAPI.gets"
 cwe = 120
 confidence = "medium"
 
+# Dead stores, split by what the store cost.
+#
+# The analyzer already discards the case that is idiomatic rather than wrong:
+# `double w = 0.0;` overwritten before it is read is NOT reported, nor is any
+# other constant initializer. Verified on clang 18 -- only a *computed*
+# initializer is, and then with a distinct message.
+#
+# That leaves two real shapes, and they are not equally bad:
+#
+#   double w = compute();  w = other();   // "during its initialization"
+#   v = 99;                               // plain: computed and thrown away
+#
+# The first wasted a call, which may be deliberate (a cheap default that a
+# branch usually replaces). The second is the shape with no benign reading --
+# a value produced and discarded, like an accumulator nothing ever consumes.
+# So the plain form keeps high confidence and the initializer form drops to
+# medium. Ordering matters: the qualified rule has to come first.
+[[rule]]
+tool = "clang-tidy"
+check = "clang-analyzer-deadcode.DeadStores"
+cwe = 563
+confidence = "medium"
+message_contains = "during its initialization"
+
 [[rule]]
 tool = "clang-tidy"
 check = "clang-analyzer-deadcode.DeadStores"
@@ -1336,3 +1360,13 @@ cwe = 457
 tool = "valgrind"
 check = "Overlap"
 cwe = 119
+
+# cppcheck's name for the defensive-initializer case specifically: the value is
+# overwritten before it is read. Low by definition -- this is the shape a
+# programmer writes on purpose, and the one the reference maintainers *added*
+# while fixing uninitialised reads.
+[[rule]]
+tool = "cppcheck"
+check = "redundantInitialization"
+cwe = 563
+confidence = "low"

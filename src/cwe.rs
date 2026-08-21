@@ -211,6 +211,34 @@ mod tests {
     }
 
     #[test]
+    fn dead_store_confidence_splits_on_what_the_store_cost() {
+        let t = table();
+        let tool = Tool::new("clang-tidy");
+        // A value computed and thrown away is the shape with no benign
+        // reading -- an accumulator nothing consumes, say.
+        let discarded = t.classify(
+            &tool,
+            "clang-analyzer-deadcode.DeadStores",
+            "Value stored to 'v' is never read",
+            None,
+            Confidence::Medium,
+        );
+        assert_eq!(discarded.confidence, Confidence::High);
+
+        // A computed initializer replaced before it is read wasted a call, but
+        // may be a deliberate default that a branch usually replaces.
+        let initializer = t.classify(
+            &tool,
+            "clang-analyzer-deadcode.DeadStores",
+            "Value stored to 'w' during its initialization is never read",
+            None,
+            Confidence::Medium,
+        );
+        assert_eq!(initializer.confidence, Confidence::Medium);
+        assert_eq!(discarded.cwe, initializer.cwe);
+    }
+
+    #[test]
     fn message_pattern_beats_fallback() {
         let t = table();
         let tidy = Tool::new("clang-tidy");
