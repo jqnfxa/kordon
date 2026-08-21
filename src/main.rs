@@ -413,6 +413,7 @@ fn main() -> Result<()> {
         unlisted_files: unlisted.len(),
         external_findings: external,
         call_graph: &call_graph,
+        dropped_flags: compile_db.as_ref().map(|d| d.dropped_flags()).unwrap_or(&[]),
     };
 
     if cli.json {

@@ -20,6 +20,53 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Flags a GCC-built project puts in its compile database that clang refuses.
+///
+/// Kordon's static engines are clang frontends, but plenty of projects build
+/// with GCC -- every out-of-tree kernel module, for a start. Their databases
+/// carry flags clang has no equivalent for, and clang does not skip them: it
+/// errors out, so *every* translation unit fails and the run looks like a
+/// broken project rather than an incompatible one.
+///
+/// Measured on a 217-line kernel module: seven flags, and removing them takes
+/// clang from "unknown argument" on every unit to a clean parse.
+///
+/// Prefix-matched, because several take values (`-mindirect-branch=thunk-extern`).
+/// Deliberately a deny-list rather than an allow-list: dropping a flag that
+/// clang would have accepted changes what gets analysed, so the conservative
+/// error is to keep too much and let clang complain about one unit.
+const CLANG_REJECTS: &[&str] = &[
+    "-mpreferred-stack-boundary",
+    "-mindirect-branch",
+    "-mfunction-return",
+    "-mrecord-mcount",
+    "-mno-fp-ret-in-387",
+    "-mskip-rax-setup",
+    "-fno-allow-store-data-races",
+    "-fconserve-stack",
+    "-fsanitize=bounds-strict",
+    "-fno-var-tracking-assignments",
+    "-flive-patching",
+    "-fmin-function-alignment",
+    "-femit-struct-debug-baseonly",
+    "-fno-inline-functions-called-once",
+    "-Wno-alloc-size-larger-than",
+    "-Wno-dangling-pointer",
+    "-Wno-maybe-uninitialized",
+    "-Wno-packed-not-aligned",
+    "-Wno-format-truncation",
+    "-Wno-format-overflow",
+    "-Wno-restrict",
+    "-Wno-stringop-truncation",
+    "-Wno-stringop-overflow",
+    "-Wno-unterminated-string-initialization",
+    "-Werror=designated-init",
+];
+
+fn clang_rejects(arg: &str) -> bool {
+    CLANG_REJECTS.iter().any(|bad| arg.starts_with(bad))
+}
+
 pub struct CompileDb {
     /// The path handed to tools that read the database themselves
     /// (clang-tidy `-p`, cppcheck `--project`).
@@ -27,6 +74,10 @@ pub struct CompileDb {
     /// Source file -> compilation flags, with the pieces that make no sense
     /// when re-driving the compiler already stripped.
     args: HashMap<PathBuf, Vec<String>>,
+    /// Distinct GCC-only flags removed so clang could read the database.
+    /// Reported, never silent: the analysis ran on slightly different flags
+    /// than the build used, and the reader is entitled to know which.
+    dropped: Vec<String>,
 }
 
 impl CompileDb {
@@ -44,20 +95,38 @@ impl CompileDb {
             .with_context(|| format!("could not parse {}", path.display()))?;
 
         let mut args = HashMap::new();
+        let mut dropped: Vec<String> = Vec::new();
         if let Some(list) = entries.as_array() {
             for entry in list {
                 if let Some((file, flags)) = parse_entry(entry) {
+                    for f in flags.iter().filter(|f| clang_rejects(f)) {
+                        if !dropped.contains(f) {
+                            dropped.push(f.clone());
+                        }
+                    }
+                    let kept = flags.into_iter().filter(|f| !clang_rejects(f)).collect();
                     // Later entries win, matching how a build system would
                     // last-write a duplicated unit.
-                    args.insert(file, flags);
+                    args.insert(file, kept);
                 }
             }
         }
 
-        Ok(CompileDb {
-            path: given.to_path_buf(),
-            args,
-        })
+        // Tools that read the database themselves get a rewritten copy, since
+        // they never see `args`. Only written when something was actually
+        // removed -- an already-clang database is passed through untouched.
+        let path = if dropped.is_empty() {
+            given.to_path_buf()
+        } else {
+            write_normalized(&entries)?
+        };
+
+        Ok(CompileDb { path, args, dropped })
+    }
+
+    /// GCC-only flags removed so clang could read this database.
+    pub fn dropped_flags(&self) -> &[String] {
+        &self.dropped
     }
 
     /// Path to pass to tools that read the database themselves.
@@ -127,6 +196,40 @@ fn parse_entry(entry: &serde_json::Value) -> Option<(PathBuf, Vec<String>)> {
     Some((PathBuf::from(file), flags))
 }
 
+/// Write a copy of the database with the clang-incompatible flags removed.
+///
+/// Emitted in `arguments` form rather than `command`, so no quoting question
+/// arises for a path containing a space.
+fn write_normalized(entries: &serde_json::Value) -> Result<PathBuf> {
+    let mut out = Vec::new();
+    for entry in entries.as_array().into_iter().flatten() {
+        let Some(obj) = entry.as_object() else { continue };
+        let argv: Vec<String> = match obj.get("command").and_then(|c| c.as_str()) {
+            Some(cmd) => cmd.split_whitespace().map(String::from).collect(),
+            None => obj
+                .get("arguments")
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+        };
+        let kept: Vec<String> = argv.into_iter().filter(|a| !clang_rejects(a)).collect();
+        let mut new_entry = serde_json::Map::new();
+        for key in ["directory", "file", "output"] {
+            if let Some(v) = obj.get(key) {
+                new_entry.insert(key.to_string(), v.clone());
+            }
+        }
+        new_entry.insert("arguments".into(), serde_json::json!(kept));
+        out.push(serde_json::Value::Object(new_entry));
+    }
+
+    let dir = std::env::temp_dir().join(format!("kordon-db-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("compile_commands.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +286,43 @@ mod tests {
     #[test]
     fn unknown_file_has_no_flags() {
         assert!(db_from(SAMPLE, "unknown").args_for(Path::new("/nope.cpp")).is_none());
+    }
+
+    const GCC_KERNEL: &str = r#"[
+      {"directory":"/b","file":"/src/dmp.c",
+       "command":"gcc-13 -I/inc -mpreferred-stack-boundary=3 -mindirect-branch=thunk-extern -fconserve-stack -fno-allow-store-data-races -DKBUILD -c /src/dmp.c -o /b/dmp.o"}
+    ]"#;
+
+    #[test]
+    fn gcc_only_flags_are_removed_so_clang_can_read_the_database() {
+        let db = db_from(GCC_KERNEL, "gccflags");
+        let args = db.args_for(Path::new("/src/dmp.c")).unwrap();
+        // clang errors rather than skipping these, so a single one left in
+        // fails *every* translation unit and the run looks like a broken
+        // project instead of an incompatible database.
+        for bad in [
+            "-mpreferred-stack-boundary=3",
+            "-mindirect-branch=thunk-extern",
+            "-fconserve-stack",
+            "-fno-allow-store-data-races",
+        ] {
+            assert!(!args.iter().any(|a| a == bad), "{bad} survived");
+        }
+        // Everything the analysis actually needs is untouched.
+        assert!(args.contains(&"-I/inc".to_string()));
+        assert!(args.contains(&"-DKBUILD".to_string()));
+        assert_eq!(db.dropped_flags().len(), 4);
+    }
+
+    #[test]
+    fn a_clang_database_is_passed_through_untouched() {
+        let db = db_from(SAMPLE, "passthrough");
+        // No rewrite, so tools read the project's own file and any path
+        // assumption they make about it still holds.
+        assert!(db.dropped_flags().is_empty());
+        assert!(db.path().ends_with("kordon-db-test-".to_string()
+            + &std::process::id().to_string()
+            + "-passthrough"));
     }
 
     #[test]

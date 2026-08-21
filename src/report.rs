@@ -34,6 +34,10 @@ pub struct Report<'a> {
     pub external_findings: usize,
     /// Cross-TU dependencies observed during the CTU pass. Empty without --ctu.
     pub call_graph: &'a CallGraph,
+    /// GCC-only flags removed from the compile database so the clang-based
+    /// engines could read it. Reported because the analysis then ran on
+    /// slightly different flags than the build did.
+    pub dropped_flags: &'a [String],
 }
 
 impl<'a> Report<'a> {
@@ -251,6 +255,15 @@ impl<'a> Report<'a> {
         }
 
         out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
+        if !self.dropped_flags.is_empty() {
+            out.push_str(&format!(
+                "  {} GCC-only flag(s) removed from the compile database so the clang\n\
+             \x20 engines could read it -- the analysis used slightly different flags\n\
+             \x20 than the build: {}\n",
+                self.dropped_flags.len(),
+                self.dropped_flags.join(", ")
+            ));
+        }
         if self.external_findings > 0 {
             out.push_str(&format!(
                 "  {} finding(s) dropped: they landed in system or dependency headers\n  \

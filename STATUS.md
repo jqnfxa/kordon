@@ -122,6 +122,73 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## GCC-built projects: the compile database needed normalizing (2026-08-21)
+
+Kordon's static engines are clang frontends, but plenty of projects build with
+GCC -- every out-of-tree kernel module, for a start. Their compile databases
+carry flags clang has no equivalent for, and clang does not skip them: it
+errors, so **every** translation unit fails and the run looks like a broken
+project rather than an incompatible database.
+
+Measured on a 217-line kernel module: **20 GCC-only flags**, including
+`-mpreferred-stack-boundary=3`, `-mindirect-branch=thunk-extern`,
+`-fno-allow-store-data-races`, `-fconserve-stack`, `-fsanitize=bounds-strict`
+and a dozen `-Wno-` options clang does not know. Removing them takes clang from
+"unknown argument" on every unit to a clean parse.
+
+`CompileDb::load` now strips them and, when it strips anything, writes a
+rewritten copy for the tools that read the database themselves. The dropped
+flags are named in the report -- the analysis ran on slightly different flags
+than the build did, and that is the reader's business. An already-clang
+database is passed through untouched.
+
+Deliberately a deny-list rather than an allow-list: dropping a flag clang would
+have accepted changes what gets analysed, so the conservative error is to keep
+too much and let clang complain about one unit.
+
+This is the mirror of a problem already recorded here from the other side --
+a clang-generated database breaking gcc's analyzer under CodeChecker. Compile
+databases are not compiler-neutral, in either direction.
+
+## A real defect Kordon missed, and why (2026-08-21)
+
+The same kernel module contains two serious bugs that Kordon reported nothing
+about:
+
+```c
+struct dm_dev *device = kmalloc(sizeof(struct dm_dev), GFP_KERNEL);
+if (device == NULL) { ... return -ENOMEM; }
+const int status = dm_get_device(ti, argv[0], mode, &device);   /* overwrites */
+...
+ti->private = device;
+```
+
+`dm_get_device(..., struct dm_dev **result)` is an out-parameter; the
+device-mapper core allocates and owns the `dm_dev`. So the `kmalloc` result is
+overwritten and leaked (CWE-401), and worse, the destructor does
+`dm_put_device(ti, device); kfree(device);` -- calling `kfree` on memory the
+core owns and the module never allocated (CWE-590). That is allocator
+corruption, not a leak.
+
+Clang SA cannot see it: `dm_get_device` is declared in a header and defined in
+the kernel, so passing `&device` to an opaque function makes it assume the
+pointer escapes and stop reasoning.
+
+**A check for the shape was prototyped and not shipped.** "A local initialised
+from an allocator whose address is then passed to a function, with no release
+in between" works exactly on a clean C probe -- flags the defect, stays silent
+on both the correct version and the freed-first version. It reaches **zero** of
+the real cases, because `kmalloc` in kernel 6.14 expands through macros that
+`ignoringParenCasts` does not see through, and the initialiser never matches.
+Shipping a check that misses the defect that motivated it would be worse than
+not having it.
+
+Two matcher traps cost time here and are worth not repeating:
+`matchesName` matches the **qualified** name, so `^malloc$` never matches
+`::malloc` -- anchors silently disable the clause. And an unbalanced paren in a
+matcher makes clang-query return zero rather than an error, which is
+indistinguishable from a clean codebase.
+
 ## kordon-transfer-to-non-owner: the Qt-noise gap (2026-08-21)
 
 Running Kordon on a small Qt/genetic-algorithm project produced 13 CWE-401
