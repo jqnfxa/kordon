@@ -1,9 +1,0 @@
-{
-  "analyzer": "lsan",
-  "labels": {
-    "LeakSanitizer": [
-      "doc_url:https://clang.llvm.org/docs/LeakSanitizer.html",
-      "severity:HIGH"
-    ]
-  }
-}

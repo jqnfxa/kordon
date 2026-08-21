@@ -1031,7 +1031,11 @@ first bug on a path.
 
 ## CodeChecker: evaluated, not wired (2026-08-20)
 
-Installed 6.28.2 in `.venv-cc/` (`pip install codechecker`). It works, and
+Installed 6.28.2 via `scripts/setup-codechecker.sh`, which puts it in a
+virtualenv under the gitignored `third_party/`. It was originally created as
+`.venv-cc/` inside the repo and committed by accident -- 9190 files, 311 MB of
+binaries and `.pyc`. `.gitignore` now covers virtualenvs, and every engine that
+is not a distribution package installs under `third_party/`. It works, and
 `CodeChecker parse -e json` gives a clean schema: `checker_name`,
 `analyzer_name`, `file.path`, `line`, `message`, `report_hash`. No CWE, so the
 mapping table still does that work. Check ids are as predicted: clangsa bare

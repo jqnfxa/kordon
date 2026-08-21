@@ -1,9 +1,0 @@
-{
-  "analyzer": "smatch",
-  "labels": {
-    "smatch": [
-      "doc_url:https://repo.or.cz/w/smatch.git",
-      "severity:MEDIUM"
-    ]
-  }
-}

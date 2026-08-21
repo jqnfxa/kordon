@@ -48,8 +48,18 @@ Kordon's own checks are `kordon-unsigned-subtraction` (CWE-191),
 `kordon-assert-only-validation` (CWE-754) and `kordon-index-used-before-check`
 (CWE-119).
 
-A missing engine is reported as skipped rather than silently ignored. IKOS is
-installed locally by `scripts/setup-ikos.sh`; nothing needs to go system-wide.
+A missing engine is reported as skipped rather than silently ignored.
+
+Engines that are not distribution packages are built into a local, gitignored
+prefix under `third_party/`; nothing is installed system-wide:
+
+```bash
+scripts/setup-ikos.sh --check          # abstract interpretation
+scripts/setup-codechecker.sh --check   # optional: adds gcc -fanalyzer
+```
+
+Run either without `--check` to install. `third_party/` is disposable — delete
+it and re-run the script.
 
 ## Scope
 

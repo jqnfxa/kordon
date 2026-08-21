@@ -1,9 +1,0 @@
-{
-  "analyzer": "tsan",
-  "labels": {
-    "ThreadSanitizer": [
-      "doc_url:https://clang.llvm.org/docs/ThreadSanitizer.html",
-      "severity:HIGH"
-    ]
-  }
-}

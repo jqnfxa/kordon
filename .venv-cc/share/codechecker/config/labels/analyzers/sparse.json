@@ -1,9 +1,0 @@
-{
-  "analyzer": "sparse",
-  "labels": {
-    "sparse": [
-      "doc_url:https://git.kernel.org/pub/scm/devel/sparse/sparse.git",
-      "severity:MEDIUM"
-    ]
-  }
-}

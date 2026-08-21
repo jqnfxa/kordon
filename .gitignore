@@ -76,3 +76,11 @@ Testing/
 
 # locally built analysis engines
 /third_party
+
+# Python virtualenvs. CodeChecker's is 311 MB of binaries and pyc files; it
+# belongs under third_party/, which scripts/setup-codechecker.sh does. This
+# entry exists because it did not, once.
+.venv*/
+venv/
+__pycache__/
+*.pyc

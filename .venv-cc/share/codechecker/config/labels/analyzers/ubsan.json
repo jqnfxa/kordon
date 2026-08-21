@@ -1,9 +1,0 @@
-{
-  "analyzer": "ubsan",
-  "labels": {
-    "UndefinedBehaviorSanitizer": [
-      "doc_url:https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html",
-      "severity:HIGH"
-    ]
-  }
-}
