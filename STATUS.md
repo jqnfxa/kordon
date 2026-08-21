@@ -122,6 +122,79 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## kordon-dead-store: work computed and thrown away (2026-08-21)
+
+Written because `clang-analyzer-deadcode.DeadStores` misses the shape that
+matters most, verified rather than assumed: it reports a plain
+`v = compute();` that is never read, and says nothing about
+
+```cpp
+int var = 0;
+for (int i = 0; i < n; ++i) { sum += i * 10.0; var += i; }
+return sum;                      // var never used: every += is dead
+```
+
+because the compound assignment reads `var` and its liveness analysis stops
+there.
+
+**Defining "read" is the whole check.** The obvious definition -- a reference
+wrapped in an lvalue-to-rvalue `ImplicitCastExpr` -- works and is wrong. Inside
+an uninstantiated template the expression is type-dependent and carries no
+cast, so *every accumulator in every template header reads as dead*. It was
+caught by checking a finding rather than trusting the number:
+`filter_convolution.hpp` had `sum` reported, and `sum` is consumed two lines
+later by `line_data.dataOut[x] = sum;`.
+
+The formulation that works needs no cast and behaves identically in both
+contexts: **a read is any reference that is not the left side of an assignment
+to that same variable.** The left side of `sum += x` is deliberately not a
+read -- a compound assignment does read, but only to feed the same variable, so
+a value that never leaves that cycle was still never used.
+
+One more exclusion, also from a checked finding: the assignment's own value
+must not be consumed. `while ((len -= 8) >= 0)` reads the result through the
+comparison.
+
+Measured across 452 translation units: **46 positions on the broken tree, 12 on
+the corrected one (-74%)**, reaching 34 defects the maintainers acted on --
+**1.4:1, the sharpest ratio of any check here**, and the strongest
+responsiveness.
+
+### The best find is a shape nobody was looking for
+
+```cpp
+inline void KrenTangage_to_TiltKursN(TYPE tangage, TYPE kren,
+                                     double Tilt, double KursN)
+{
+    Tilt  = radian_to_angle(asin(...));
+    KursN = radian_to_angle(atan2(...));
+}
+```
+
+Both outputs are taken **by value**. The function computes two results,
+discards them, and returns void; every caller gets nothing. Somebody meant
+`double &`. No other engine reports it, and it is why parameters are
+deliberately *included* rather than excluded -- a reference parameter is not
+matched, because `hasType(builtinType())` does not match a reference type, so
+the correct idiom stays silent while the missing `&` does not.
+
+## Uninitialised variables: the split already exists, one level down
+
+Promoting `cppcoreguidelines-init-variables` to high was considered and
+rejected on measurement: **1500 findings on the reference corpus, reaching zero
+acted-on defects, zero of them exclusively.** It would have quadrupled the
+detailed tier for no gain.
+
+The reason is that it does not report the defect. `int x;` on its own is not
+one -- `int x; if (c) x = 1; else x = 2;` is correct -- and flagging every
+uninitialised declaration is a style rule. The actual defect is *reading*
+before writing, which is path-sensitive, and those checks are already high:
+`clang-analyzer-core.uninitialized.{Assign,Branch,UndefReturn,ArraySubscript}`.
+
+So the tiering the ask wants is in place, just drawn one level lower than the
+name suggests: declaration-without-initialiser is low, read-before-write is
+high.
+
 ## CWE-563: splitting dead stores by what the store cost (2026-08-21)
 
 Measured on clang 18 rather than assumed. `clang-analyzer-deadcode.DeadStores`

@@ -78,6 +78,9 @@ pub enum Exemption {
     /// Assembled whole, because the release must be recognised as releasing
     /// the same member that is being overwritten.
     ReinitWithoutFree,
+    /// Assembled whole, because "read" has to be defined by back-reference to
+    /// the variable being written.
+    DeadStore,
 }
 
 impl QueryCheck {
@@ -97,6 +100,9 @@ impl QueryCheck {
         if self.exemption == Exemption::ReinitWithoutFree {
             return reinit_without_free_matcher();
         }
+        if self.exemption == Exemption::DeadStore {
+            return dead_store_matcher();
+        }
         let mut m = String::from(self.base);
         match self.exemption {
             Exemption::None => {}
@@ -113,7 +119,8 @@ impl QueryCheck {
             | Exemption::ParallelExtent
             | Exemption::ConstantIndex
             | Exemption::ExtentUnderflow
-            | Exemption::ReinitWithoutFree => unreachable!("handled above"),
+            | Exemption::ReinitWithoutFree
+            | Exemption::DeadStore => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -932,6 +939,93 @@ pub const REINIT_WITHOUT_FREE: QueryCheck = QueryCheck {
 already held; calling this method twice leaks the first buffer",
 };
 
+/// Build the dead-store matcher.
+fn dead_store_matcher() -> String {
+    // Builtin, non-volatile, automatic storage. A volatile write is observable
+    // even when nothing reads it back, and a class type's assignment operator
+    // can have effects of its own. Parameters are deliberately *included*:
+    // `void f(double out)` that assigns to `out` and returns is a missing `&`,
+    // which is exactly the defect this looks for.
+    let var = "varDecl(hasLocalStorage(), hasType(builtinType()), \
+unless(hasType(isVolatileQualified()))).bind(\"v\")";
+    let same = "varDecl(equalsBoundNode(\"v\"))";
+
+    // A *read* is any reference to the variable that is not the left side of an
+    // assignment to that same variable.
+    //
+    // The obvious alternative -- "a read is a reference wrapped in an
+    // lvalue-to-rvalue ImplicitCastExpr" -- works and is wrong. Inside an
+    // uninstantiated template the expression is type-dependent and carries no
+    // implicit cast, so every accumulator in every template header reads as
+    // dead. Measured: `sum` in a class-template member, plainly consumed two
+    // lines later, was reported. This formulation needs no cast and behaves
+    // the same in both contexts.
+    //
+    // Note what this deliberately does *not* count as a read: the left side of
+    // `sum += x`. A compound assignment does read the variable, but only to
+    // feed the same variable, so a value that never leaves that cycle is still
+    // never used -- which is the accumulator case that clang-analyzer's
+    // DeadStores misses entirely.
+    let read = format!(
+        "declRefExpr(to({same}), \
+unless(hasParent(binaryOperator(isAssignmentOperator(), \
+hasLHS(ignoringParenImpCasts(declRefExpr(to({same}))))))))"
+    );
+
+    format!(
+        "binaryOperator(isAssignmentOperator(), \
+unless(isExpansionInSystemHeader()), \
+unless(hasParent(parenExpr())), \
+unless(hasParent(binaryOperator())), \
+unless(hasParent(callExpr())), \
+hasLHS(ignoringParenImpCasts(declRefExpr(to({var})))), \
+unless(hasAncestor(functionDecl(hasDescendant({read})))))"
+    )
+}
+
+/// A value is computed, stored, and never read.
+///
+///     int var = 0;
+///     for (int i = 0; i < n; ++i) { sum += i * 10.0; var += i; }
+///     return sum;                       // var never used: every += is dead
+///
+/// Distinct from a defensive initializer, which is idiomatic and harmless:
+/// `double w = 0.0;` overwritten before it is read costs nothing and is
+/// reported by nobody here. What this looks for is the opposite -- work done
+/// and thrown away, which is either a wasted computation or, more often, a
+/// symptom that the result was meant to go somewhere and does not.
+///
+/// `clang-analyzer-deadcode.DeadStores` does not find these. Verified: it
+/// reports a simple `v = compute();` that is never read, and says nothing
+/// about the accumulator above, because the compound assignment reads `var`
+/// and its liveness analysis stops there.
+///
+/// The best find on the reference corpus is neither shape:
+///
+///     inline void KrenTangage_to_TiltKursN(TYPE tangage, TYPE kren,
+///                                          double Tilt, double KursN)
+///     {
+///         Tilt   = radian_to_angle(asin(...));
+///         KursN  = radian_to_angle(atan2(...));
+///     }
+///
+/// Both outputs are taken **by value**. The function computes two results,
+/// discards them, and returns void; every caller gets nothing. Somebody meant
+/// `double &`. No other engine reports it.
+///
+/// Measured across 452 translation units: **46 positions on the broken tree,
+/// 12 on the corrected one (-74%)**, reaching 34 defects the maintainers acted
+/// on -- a ratio of 1.4:1, the sharpest of any check here.
+pub const DEAD_STORE: QueryCheck = QueryCheck {
+    id: "kordon-dead-store",
+    base: "", // built by matcher(); see Exemption::DeadStore above
+    exemption: Exemption::DeadStore,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this value is stored and never read afterwards; the computation that produced \
+it is wasted, and if the result was meant to reach the caller it does not",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -942,6 +1036,7 @@ pub const CHECKS: &[QueryCheck] = &[
     UNCHECKED_CONSTANT_INDEX,
     EXTENT_UNDERFLOW,
     REINIT_WITHOUT_FREE,
+    DEAD_STORE,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1345,6 +1440,24 @@ Match #2:\n\n\
         // `allOf` around a node matcher plus hasAncestor silently matches
         // nothing -- it cost a full tree scan to notice. Keep them inline.
         assert!(!m.contains("allOf("));
+    }
+
+    #[test]
+    fn dead_store_defines_read_without_relying_on_implicit_casts() {
+        let m = DEAD_STORE.matcher();
+        // The tempting definition -- "a read is a reference wrapped in an
+        // lvalue-to-rvalue ImplicitCastExpr" -- is wrong inside templates,
+        // where a type-dependent expression carries no cast and every
+        // accumulator therefore reads as dead. Measured on a class-template
+        // member whose value was plainly consumed two lines later.
+        assert!(!m.contains("implicitCastExpr()))))"));
+        assert!(m.contains("equalsBoundNode(\"v\")"));
+        // A volatile store is observable even when nothing reads it back.
+        assert!(m.contains("isVolatileQualified"));
+        // The assignment's own value must not be consumed: `while ((len -= 8) >= 0)`
+        // reads the result through the comparison.
+        assert!(m.contains("unless(hasParent(parenExpr()))"));
+        assert!(m.contains("unless(hasParent(binaryOperator()))"));
     }
 
     #[test]

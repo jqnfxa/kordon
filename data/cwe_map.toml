@@ -1370,3 +1370,13 @@ tool = "cppcheck"
 check = "redundantInitialization"
 cwe = 563
 confidence = "low"
+
+# High, per the split above: this is the "computed and thrown away" shape, not
+# the defensive-initializer one. 46 positions on the reference corpus, 12 on the
+# corrected tree (-74%), reaching 34 acted-on defects -- 1.4:1, the sharpest
+# ratio of any check here.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-dead-store"
+cwe = 563
+confidence = "high"
