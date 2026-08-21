@@ -243,6 +243,51 @@ const GUARD_SHAPES: &[GuardShape] = &[SHAPE_VAR, SHAPE_CALL_ON_VAR, SHAPE_CALL_O
 /// Only `>`, `>=` and `!=` count. `if (k < n)` establishes nothing about zero,
 /// and an earlier version that accepted any comparison swallowed three real
 /// defects.
+/// Statements that leave the function rather than falling through.
+///
+/// `has` rather than `hasDescendant` on purpose: a `return` nested inside a
+/// further condition (`{ if (x) return; }`) does not make the branch an exit,
+/// and `hasDescendant` would claim it does.
+const EXIT_STATEMENTS: &str = "anyOf(returnStmt(), cxxThrowExpr(), \
+compoundStmt(has(returnStmt())), compoundStmt(has(cxxThrowExpr())))";
+
+/// Exempt a precondition validated by leaving the function.
+///
+///     if (in.width() == 0) { return false; }
+///     ...
+///     r = in.width() - 1;        // cannot underflow here
+///
+/// `guard_clause` only understands a condition that *encloses* the use, which
+/// misses this shape entirely -- and it is at least as common, because it is
+/// how preconditions are usually written. The check reported it anyway, which
+/// the fixture recorded as a known false positive.
+///
+/// Ordering is not checked, because AST matchers cannot express "this
+/// statement precedes that one". Any early exit naming the operand anywhere in
+/// the function exempts every use of it. A use *before* the guard would be
+/// wrongly exempted; that errs toward silence, which is the direction this
+/// file consistently chooses.
+///
+/// **The subtraction must not be inside the exempting condition itself.**
+/// Without that clause the check exempts a defect using the defect's own `if`:
+///
+///     if ((x_begin > (width_in - 1)) || ...) { return; }
+///
+/// Here `width_in - 1` is evaluated *by* the guard, so a zero `width_in`
+/// underflows before anything can protect it. Measured on the reference
+/// corpus, the naive form suppressed 11 positions of which 2 were real defects
+/// the maintainers fixed; with this clause it suppresses 6 and none of them
+/// are.
+fn early_exit_clause(shape: &GuardShape) -> String {
+    let mentions = format!("hasCondition(hasDescendant({}))", shape.back_reference);
+    format!(
+        "allOf(hasLHS(ignoringParenImpCasts({operand})), \
+unless(hasAncestor(ifStmt({mentions}))), \
+hasAncestor(functionDecl(hasDescendant(ifStmt({mentions}, hasThen({EXIT_STATEMENTS}))))))",
+        operand = shape.operand
+    )
+}
+
 fn guard_clause(shape: &GuardShape) -> String {
     let cmp = format!(
         "binaryOperator(hasAnyOperatorName(\">\", \">=\", \"!=\"), \
@@ -754,6 +799,9 @@ fn append_arithmetic_guards(m: &mut String) {
     for shape in GUARD_SHAPES {
         m.push_str(", unless(");
         m.push_str(&guard_clause(shape));
+        m.push(')');
+        m.push_str(", unless(");
+        m.push_str(&early_exit_clause(shape));
         m.push(')');
     }
     m.push_str(", unless(");
@@ -1293,6 +1341,23 @@ Match #2:\n\n\
         // `allOf` around a node matcher plus hasAncestor silently matches
         // nothing -- it cost a full tree scan to notice. Keep them inline.
         assert!(!m.contains("allOf("));
+    }
+
+    #[test]
+    fn early_exit_guard_cannot_be_satisfied_by_its_own_condition() {
+        let m = UNSIGNED_SUBTRACTION.matcher();
+        // A precondition validated by leaving the function must exempt.
+        assert!(m.contains("returnStmt()"));
+        assert!(m.contains("cxxThrowExpr()"));
+        // ...but not when the subtraction is inside the exempting condition.
+        // Without this the check exempts a defect using the defect's own `if`:
+        // `if (x > width_in - 1) return;` underflows while computing the guard.
+        // Measured: the naive form suppressed 2 real defects.
+        assert!(m.contains("unless(hasAncestor(ifStmt(hasCondition"));
+        // `has`, not `hasDescendant`: a return nested in a further condition
+        // does not make the branch an exit.
+        assert!(m.contains("compoundStmt(has(returnStmt()))"));
+        assert!(!m.contains("compoundStmt(hasDescendant(returnStmt()))"));
     }
 
     #[test]

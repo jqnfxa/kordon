@@ -48,23 +48,42 @@ Roi roi_checked(const Image &in)
     return Roi{0, 0, 0, 0};
 }
 
-// ------------------------------------------------- known limitation: reported
+// ------------------------------------------------ must stay silent (early exit)
+
+// Guarded by leaving the function rather than by an enclosing condition. This
+// is at least as common as the shape above, because it is how preconditions
+// are usually written, and it was a known false positive until the check
+// learned to recognise an `if` whose branch exits.
 //
-// This is guarded just as correctly, by an early return rather than by an
-// enclosing condition, and the check reports it anyway. Recognising it needs
-// dataflow: the subtraction is not inside the guard, and the guard's effect is
-// that control never reaches the subtraction -- a fact about reachability, not
-// about the expression. IKOS was tested on exactly this shape and also warns.
-//
-// The fixture keeps the false positive rather than hiding it, so the cost of
-// the limitation stays visible and nobody "fixes" the check by exempting every
-// function that merely mentions the extent somewhere.
+// Ordering is deliberately not checked: AST matchers cannot express "this
+// statement precedes that one", so any early exit naming the operand exempts
+// every use of it in the function. A use placed *before* the guard would be
+// wrongly exempted. That errs toward silence, which is the direction chosen
+// throughout this file.
 Roi roi_early_return(const Image &in)
 {
     if (in.width() == 0 || in.height() == 0) {
         return Roi{0, 0, 0, 0};
     }
     return Roi{0, in.width() - 1, 0, in.height() - 1};
+}
+
+// ------------------------------------------- must be flagged (guard underflows)
+
+// The subtraction is evaluated *by* the guard, not protected by it. If `width`
+// is zero this underflows while computing the very condition meant to prevent
+// it, and the comparison then succeeds against a huge value.
+//
+// This case is why the early-exit exemption excludes subtractions inside the
+// exempting condition. Without that clause the check exempted this defect
+// using this defect's own `if` -- measured on the reference corpus, the naive
+// form suppressed two real defects the maintainers had fixed.
+bool out_of_range(const Image &in, std::size_t x_begin, std::size_t x_end)
+{
+    if (x_begin > in.width() - 1 || x_end > in.height() - 1) {
+        return true;
+    }
+    return false;
 }
 
 }  // namespace kordon_probe
