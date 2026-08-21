@@ -19,6 +19,66 @@ engines agree on, and reports the gaps. 60 tests green.
 | Compile database | `src/compile_db.rs` | parsed once; decides which files are in the build |
 | Kordon's own checks | `src/tools/clang_query.rs` | AST matchers via clang-query; CWE-191 |
 
+## Early-exit guards: the limitation is closed (2026-08-21)
+
+```cpp
+if (in.width() == 0) { return false; }
+...
+r = in.width() - 1;        // cannot underflow here
+```
+
+`guard_clause` only understood a condition that *encloses* the use, so this
+shape -- at least as common, since it is how preconditions are usually written
+-- was reported anyway. It was carried in the fixture as a known false
+positive.
+
+**The clause that makes it safe** is requiring the subtraction not to be inside
+the exempting condition. Without it the check exempts a defect using the
+defect's own `if`:
+
+```cpp
+if ((x_begin > (width_in - 1)) || ...) { return; }
+```
+
+`width_in - 1` is evaluated *by* the guard, so a zero `width_in` underflows
+before anything can protect it. Measured: the naive form suppressed 11
+positions of which **2 were real defects the maintainers had fixed**; with the
+clause it suppresses 6 and none of them are.
+
+Ordering is not checked -- AST matchers cannot express "this statement precedes
+that one" -- so any early exit naming the operand exempts every use of it in
+the function. A use before the guard is wrongly exempted, erring toward
+silence.
+
+**The payoff was much larger than the suppression count suggests**, because it
+let two checks confirm fixes they previously could not:
+
+| check | before | after |
+|---|---|---|
+| `kordon-extent-underflow` | 45 -> 41, **-9%** | 44 -> 17, **-61%** |
+| `kordon-unsigned-subtraction` | -2% | -8% |
+
+Zero acted-on defects lost. The recorded CWE-190/191 limitation -- "treat these
+as *can* overflow, not *is* unvalidated" -- was partly a gap in the guard
+vocabulary rather than a fact about the defect class.
+
+## Widening parallel-extent beyond parameters: rejected (2026-08-21)
+
+The remaining CWE-119 "two containers" misses (13) subscript locals and members
+rather than parameters. Both relaxations were measured and both fail:
+
+| trigger | positions | specificity | new acted-on defects |
+|---|---|---|---|
+| parameters (shipped) | 181 | -17% | -- |
+| + locals | 592 | **-4%** | +2 |
+| members only | 234 | **+0%** | +4 |
+
+Locals cost 411 findings for two defects and land near
+`pro-bounds-pointer-arithmetic` territory; member containers are perfectly
+inert. A local's extent is usually established by its own construction in the
+same function, which is why subscripting it under an unrelated bound is normal
+rather than suspicious. That cluster is not reachable by widening this shape.
+
 ## Coverage as of 2026-08-21
 
 Two denominators, because they disagree and both matter. "Reported" is every

@@ -846,12 +846,16 @@ unless(isInTemplateInstantiation())"
 /// high-confidence tier. `n - 1` on a plain variable carries no invariant; an
 /// extent has a documented one, namely that an empty container reports 0.
 ///
-/// Reported at medium confidence rather than high because it **cannot confirm
-/// a fix**: on the corrected tree the expression is still there (45 to 41,
-/// -9%), since the correction is a precondition validated elsewhere in the
-/// function. That is the documented CWE-190/191 limitation, not a fault in the
-/// matcher -- the check is well targeted at defect *sites*, and says nothing
-/// about whether the site has since been guarded at a distance.
+/// It could originally not confirm a fix -- the corrected tree still contained
+/// the expression (-9%) -- because the correction is a precondition validated
+/// by an early return, which `guard_clause` cannot see. Once `early_exit_clause`
+/// landed that changed sharply: **44 positions on the broken tree, 17 on the
+/// corrected one (-61%)**, with no acted-on defect lost. The limitation was in
+/// the guard vocabulary, not in the check.
+///
+/// Still medium rather than high, because intent remains undecidable for this
+/// class: an author may know the container is never empty for reasons no local
+/// analysis can see.
 pub const EXTENT_UNDERFLOW: QueryCheck = QueryCheck {
     id: "kordon-extent-underflow",
     base: "", // built by matcher(); see Exemption::ExtentUnderflow above
