@@ -775,6 +775,17 @@ confidence = "low"
 # positions -- the 66 are consequences in unrelated functions that merely held
 # such an object as a local. Verified to go silent on the corrected tree, where
 # the flag was replaced by a member smart pointer.
+# CLAUDE.md names reinit-without-free as a gap with no off-the-shelf check, and
+# that held: nothing in clang-tidy, Clang SA or cppcheck reports these sites.
+# Clang SA cannot, because the leak needs two calls to the same method and it
+# reasons about one path at a time. Medium -- the defect is real wherever the
+# method is called twice, which this check cannot establish.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-reinit-without-free"
+cwe = 401
+confidence = "medium"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-manual-ownership-flag"

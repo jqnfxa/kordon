@@ -75,6 +75,9 @@ pub enum Exemption {
     /// Assembled whole: the same guards as `ArithmeticGuard`, over a left
     /// operand narrowed to a container-extent accessor.
     ExtentUnderflow,
+    /// Assembled whole, because the release must be recognised as releasing
+    /// the same member that is being overwritten.
+    ReinitWithoutFree,
 }
 
 impl QueryCheck {
@@ -91,6 +94,9 @@ impl QueryCheck {
         if self.exemption == Exemption::ExtentUnderflow {
             return extent_underflow_matcher();
         }
+        if self.exemption == Exemption::ReinitWithoutFree {
+            return reinit_without_free_matcher();
+        }
         let mut m = String::from(self.base);
         match self.exemption {
             Exemption::None => {}
@@ -106,7 +112,8 @@ impl QueryCheck {
             Exemption::IndexOrder
             | Exemption::ParallelExtent
             | Exemption::ConstantIndex
-            | Exemption::ExtentUnderflow => unreachable!("handled above"),
+            | Exemption::ExtentUnderflow
+            | Exemption::ReinitWithoutFree => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -781,6 +788,72 @@ pub const EXTENT_UNDERFLOW: QueryCheck = QueryCheck {
 the container is non-empty; an empty container reports 0 and 0 - 1 is the type maximum",
 };
 
+/// Build the reinit-without-free matcher.
+///
+/// Assembled here because the release has to be recognised as releasing the
+/// *same* member that is about to be overwritten, which needs one binding
+/// threaded through both halves.
+fn reinit_without_free_matcher() -> String {
+    let field = "memberExpr(member(fieldDecl(hasType(pointerType())).bind(\"f\")))";
+    let same = "memberExpr(member(fieldDecl(equalsBoundNode(\"f\"))))";
+    // Names are matched as a substring, not exactly. The reference codebase
+    // releases through `clearPolinom()`, and an exact-name list reported that
+    // correct code as a defect until the list became a pattern.
+    let released = format!(
+        "anyOf(\
+cxxDeleteExpr(hasDescendant({same})), \
+callExpr(callee(functionDecl(hasName(\"free\"))), hasAnyArgument(ignoringParenImpCasts({same}))), \
+cxxMemberCallExpr(callee(cxxMethodDecl(\
+matchesName(\"(clear|free|release|reset|destroy|dealloc|cleanup|delete)\")))))"
+    );
+    format!(
+        "binaryOperator(hasOperatorName(\"=\"), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasLHS(ignoringParenImpCasts({field})), \
+hasRHS(ignoringParenImpCasts(cxxNewExpr())), \
+hasAncestor(cxxMethodDecl(unless(cxxConstructorDecl()), unless(hasDescendant({released})))))"
+    )
+}
+
+/// An owning member is overwritten with a fresh allocation and the old one is
+/// never released.
+///
+///     void BmpImage::init(const QString &fname, float *pProcent)
+///     {
+///         ...
+///         data = new BmpImageData;    // whatever `data` held is now unreachable
+///     }
+///
+/// Calling `init` twice leaks the first buffer. A constructor is exempt, since
+/// there is nothing to release yet; every other method is not.
+///
+/// CLAUDE.md names this as one of the few gaps with no off-the-shelf
+/// equivalent, and that held up: nothing in clang-tidy, Clang SA or cppcheck
+/// reports these sites. Clang SA cannot, because the leak needs two calls to
+/// the same method and it reasons about one path at a time.
+///
+/// Measured across 452 translation units: **26 findings at 10 distinct
+/// positions**, and the four sampled were all genuine --
+/// `SparseVector::init`, `BmpImage::init`, `Tracker::make_sets`, and a guided
+/// filter's `init`, none of which release before allocating.
+///
+/// Recognising the release by name substring rather than exact match is what
+/// makes it usable: the reference codebase releases through `clearPolinom()`,
+/// and an exact list reported that correct code as a defect.
+///
+/// Medium confidence. The defect is real where a method is called twice, and
+/// whether it ever is called twice is not a fact this check can establish.
+pub const REINIT_WITHOUT_FREE: QueryCheck = QueryCheck {
+    id: "kordon-reinit-without-free",
+    base: "", // built by matcher(); see Exemption::ReinitWithoutFree above
+    exemption: Exemption::ReinitWithoutFree,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this assigns a fresh allocation to an owning member without releasing what it \
+already held; calling this method twice leaks the first buffer",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -790,6 +863,7 @@ pub const CHECKS: &[QueryCheck] = &[
     UNCHECKED_PARALLEL_EXTENT,
     UNCHECKED_CONSTANT_INDEX,
     EXTENT_UNDERFLOW,
+    REINIT_WITHOUT_FREE,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1176,6 +1250,23 @@ Match #2:\n\n\
             ext.matches("equalsBoundNode").count(),
             gen.matches("equalsBoundNode").count()
         );
+    }
+
+    #[test]
+    fn reinit_recognises_release_by_substring_not_exact_name() {
+        let m = REINIT_WITHOUT_FREE.matcher();
+        // An exact-name list reported correct code as a defect: the reference
+        // codebase releases through `clearPolinom()`, which no list of whole
+        // names contains. The regex is what makes the check usable.
+        assert!(m.contains("matchesName"));
+        assert!(!m.contains("hasAnyName"));
+        // A constructor has nothing to release yet.
+        assert!(m.contains("unless(cxxConstructorDecl())"));
+        // The delete must name the same member being overwritten.
+        assert!(m.contains("equalsBoundNode(\"f\")"));
+        // `allOf` around a node matcher plus hasAncestor silently matches
+        // nothing -- it cost a full tree scan to notice. Keep them inline.
+        assert!(!m.contains("allOf("));
     }
 
     #[test]
