@@ -81,6 +81,9 @@ pub enum Exemption {
     /// Assembled whole, because "read" has to be defined by back-reference to
     /// the variable being written.
     DeadStore,
+    /// Assembled whole: the allocation and the class that receives it are
+    /// matched in one expression.
+    TransferToNonOwner,
 }
 
 impl QueryCheck {
@@ -103,6 +106,9 @@ impl QueryCheck {
         if self.exemption == Exemption::DeadStore {
             return dead_store_matcher();
         }
+        if self.exemption == Exemption::TransferToNonOwner {
+            return transfer_to_non_owner_matcher();
+        }
         let mut m = String::from(self.base);
         match self.exemption {
             Exemption::None => {}
@@ -120,7 +126,8 @@ impl QueryCheck {
             | Exemption::ConstantIndex
             | Exemption::ExtentUnderflow
             | Exemption::ReinitWithoutFree
-            | Exemption::DeadStore => unreachable!("handled above"),
+            | Exemption::DeadStore
+            | Exemption::TransferToNonOwner => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
                 m.push_str(LOOP_COUNTER_OPERAND);
@@ -1026,6 +1033,74 @@ pub const DEAD_STORE: QueryCheck = QueryCheck {
 it is wasted, and if the result was meant to reach the caller it does not",
 };
 
+/// Build the transfer-to-non-owner matcher.
+fn transfer_to_non_owner_matcher() -> String {
+    // A class that holds a raw pointer and declares no destructor has no
+    // release path at all. `isImplicit` matters: clang synthesises a
+    // destructor for every class, so asking for "no destructor" without it
+    // matches nothing.
+    let non_owner = "cxxRecordDecl(\
+has(fieldDecl(hasType(pointerType()))), \
+unless(has(cxxDestructorDecl(unless(isImplicit())))))";
+    format!(
+        "cxxConstructExpr(\
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasDeclaration(cxxConstructorDecl(ofClass({non_owner}))), \
+hasAnyArgument(ignoringParenImpCasts(cxxNewExpr())))"
+    )
+}
+
+/// A fresh allocation is handed to a class that cannot release it.
+///
+///     GeneticAlgorithm algorithm(
+///         initial_size, max_generations, mut_p, cross_p,
+///         new RouletteWheel,
+///         new MixerCrossover(0.5, left, right),
+///         new SubstanceMutation(left, right),
+///         new PolynomialEvaluator(polynomial),
+///         left, right, polynomial);
+///
+/// `GeneticAlgorithm` stores all four in raw pointer members and declares no
+/// destructor, so nothing ever frees them. Four objects leak per construction,
+/// and the construction is a button-click handler.
+///
+/// **This is the gap that motivated the check.** Two engines should have caught
+/// it and structurally cannot:
+///
+/// * `cppcoreguidelines-owning-memory` fires on a `new` *assigned* to a
+///   non-owner. These are constructor arguments, never assigned, so it is
+///   silent -- while flagging five Qt widgets in the same file that Qt reparents
+///   and owns correctly.
+/// * `cppcoreguidelines-special-member-functions` fires when a class declares
+///   *some* special member and omits the rest. This class declares none at all,
+///   which is the worse case and the invisible one.
+///
+/// The signal is structural rather than heuristic: not "this pointer looks
+/// owned" but "this class has no release path, and it was just handed
+/// something that needs one". A non-owning back-reference is not matched,
+/// because nothing is allocated at the call site; a class holding
+/// `unique_ptr` is not matched, because the member is not a raw pointer; a
+/// class with a destructor is not matched at all.
+///
+/// Measured: 2 findings on the project that motivated it, both genuine and the
+/// same defect reached from its GUI and its CLI entry point. **Zero across 452
+/// translation units of the reference corpus** -- the shape does not occur
+/// there, so it costs nothing to run.
+///
+/// What it does not cover: a class that declares a destructor which frees some
+/// members and forgets this one. That needs the release path matched per
+/// field, and this check deliberately answers the cruder question first.
+pub const TRANSFER_TO_NON_OWNER: QueryCheck = QueryCheck {
+    id: "kordon-transfer-to-non-owner",
+    base: "", // built by matcher(); see Exemption::TransferToNonOwner above
+    exemption: Exemption::TransferToNonOwner,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this hands a fresh allocation to a class that declares no destructor and holds \
+raw pointers; nothing will ever free it",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -1037,6 +1112,7 @@ pub const CHECKS: &[QueryCheck] = &[
     EXTENT_UNDERFLOW,
     REINIT_WITHOUT_FREE,
     DEAD_STORE,
+    TRANSFER_TO_NON_OWNER,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1458,6 +1534,21 @@ Match #2:\n\n\
         // reads the result through the comparison.
         assert!(m.contains("unless(hasParent(parenExpr()))"));
         assert!(m.contains("unless(hasParent(binaryOperator()))"));
+    }
+
+    #[test]
+    fn transfer_to_non_owner_needs_the_implicit_destructor_exclusion() {
+        let m = TRANSFER_TO_NON_OWNER.matcher();
+        // clang synthesises a destructor for every class, so "no destructor"
+        // without `unless(isImplicit())` matches nothing at all and the check
+        // silently never fires.
+        assert!(m.contains("cxxDestructorDecl(unless(isImplicit()))"));
+        // The member must be a raw pointer: a unique_ptr member expresses
+        // ownership and is the fix, not the defect.
+        assert!(m.contains("fieldDecl(hasType(pointerType()))"));
+        // Something must actually be allocated at the call site, or every
+        // non-owning back-reference in the codebase is a finding.
+        assert!(m.contains("cxxNewExpr()"));
     }
 
     #[test]

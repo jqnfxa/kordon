@@ -122,6 +122,53 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## kordon-transfer-to-non-owner: the Qt-noise gap (2026-08-21)
+
+Running Kordon on a small Qt/genetic-algorithm project produced 13 CWE-401
+findings that were **all** Qt parent-child false positives -- `new QAction(this)`
+and friends, which Qt reparents and owns correctly -- while missing the one
+real leak in the same file:
+
+```cpp
+GeneticAlgorithm algorithm(
+    initial_size, max_generations, mut_p, cross_p,
+    new RouletteWheel,
+    new MixerCrossover(0.5, left, right),
+    new SubstanceMutation(left, right),
+    new PolynomialEvaluator(polynomial),
+    left, right, polynomial);
+```
+
+`GeneticAlgorithm` stores all four in raw pointer members and declares no
+destructor. Four objects leak per construction, and the construction is a
+button-click handler. Verified by reading the class: no `~GeneticAlgorithm`, no
+`delete` anywhere, and the same project's `Generation` class *does* hold
+`std::unique_ptr`, so the author knew the idiom and did not apply it here.
+
+**Two engines should have caught it and structurally cannot:**
+
+- `cppcoreguidelines-owning-memory` fires on a `new` *assigned* to a non-owner.
+  These are constructor arguments, never assigned. It was silent here while
+  producing five findings on Qt widgets in the same file that are correct.
+- `cppcoreguidelines-special-member-functions` fires when a class declares
+  *some* special member and omits the rest. This class declares none at all --
+  the worse case, and the invisible one.
+
+The check keys on a structural fact rather than a heuristic: not "this pointer
+looks owned" but "this class has no release path, and was just handed something
+that needs one". `unless(isImplicit())` on the destructor is load-bearing --
+clang synthesises one for every class, so without it the matcher matches
+nothing and the check never fires.
+
+Measured: **2 findings on the project that motivated it, both genuine**, the
+same defect reached from the GUI and the CLI entry point. **Zero across 452
+translation units of the reference corpus**, where the shape does not occur --
+so it costs nothing to run.
+
+Not covered: a class that declares a destructor which frees some members and
+forgets this one. That needs the release path matched per field; this answers
+the cruder question first.
+
 ## kordon-dead-store: work computed and thrown away (2026-08-21)
 
 Written because `clang-analyzer-deadcode.DeadStores` misses the shape that

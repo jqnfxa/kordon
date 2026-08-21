@@ -1380,3 +1380,13 @@ tool = "kordon-query"
 check = "kordon-dead-store"
 cwe = 563
 confidence = "high"
+
+# High: the signal is structural, not heuristic. The receiving class declares no
+# destructor at all, so there is no release path to be uncertain about. Measured
+# 2/2 genuine on the project that motivated it and zero across 452 translation
+# units of the reference corpus, where the shape does not occur.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-transfer-to-non-owner"
+cwe = 401
+confidence = "high"
