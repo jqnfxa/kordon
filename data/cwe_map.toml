@@ -1104,12 +1104,26 @@ check = "nullPointerDefaultArg"
 cwe = 476
 confidence = "high"
 
-# Dead store
+# Dead store.
+#
+# Low, though the underlying fact is certain: the value really is never read.
+# What is uncertain is that it is a defect. The dominant shape is a defensive
+# initializer overwritten before use -- `double theta = 0.0;` then
+# `theta = compute();` -- which is deliberate, and which the reference
+# maintainers deliberately *added* while fixing uninitialised reads.
+#
+# Measured, and every signal agrees. On the corrected tree this check goes
+# **up** 72% (121 -> 208) where roughly 226 defects were fixed; on modules/math
+# it goes up 620% and accounts for all 59 high-confidence findings, burying
+# everything else. And it earns nothing by being loud: of the acted-on defects
+# it reaches, it is the only check reaching **zero** of them --
+# clang-analyzer-deadcode.DeadStores covers the same ground at 9:1 and responds
+# -82% to fixes.
 [[rule]]
 tool = "cppcheck"
 check = "unreadVariable"
 cwe = 563
-confidence = "high"
+confidence = "low"
 
 [[rule]]
 tool = "cppcheck"

@@ -79,6 +79,49 @@ inert. A local's extent is usually established by its own construction in the
 same function, which is why subscripting it under an unrelated bound is normal
 rather than suspicious. That cluster is not reachable by widening this shape.
 
+## Scoping a run to one directory (2026-08-21)
+
+`kordon <subdir> -p <db>` works and is the fast way to iterate: `modules/math`
+takes **28s against ~10 minutes** for the full tree, with the compile database
+still supplying every flag. The findings filter to the subtree exactly as they
+filter to the analysis root for a whole project.
+
+One caveat: `--ctu` under a subdirectory indexes only that subdirectory's
+translation units, so a call into another module stays opaque. Directory
+scoping is for iterating on a check; whole-tree runs are for measuring.
+
+### What the first scoped comparison found
+
+Running `modules/math` raw against fixed immediately surfaced two results that
+pointed the wrong way, and both were real:
+
+**The fix traded uninitialised variables for dead stores.**
+`cppcoreguidelines-init-variables` drops 96% (213 -> 9) because the maintainers
+added initialisers, and cppcheck then reports those initialisers as dead
+stores: `unreadVariable` goes 15 -> 108, **+620%**. Both observations are
+correct, and the trade is obviously worth it -- an uninitialised read is a
+defect, a redundant initialiser is not.
+
+**`unreadVariable` was mapped high confidence, and that was wrong.** It made
+all 59 high-confidence findings on the corrected tree defensive initialisers,
+so the detailed report inverted: high went **up** 119% on fixed code. Demoted
+to low, and every signal agreed:
+
+| | before | after |
+|---|---|---|
+| high | 27 -> 59 (**+119%**) | 15 -> 0 (**-100%**) |
+| medium | 49 -> 9 | 49 -> 9 |
+| detailed tier on fixed code | 68 | 9 |
+
+Zero positions and zero acted-on defects lost. The check earns nothing by being
+loud: across the whole tree it reaches 36 acted-on defects and is the only
+check reaching **none** of them, while `clang-analyzer-deadcode.DeadStores`
+covers the same ground at 9:1 and responds -82% to fixes.
+
+The general lesson is the one this project keeps relearning: confidence has to
+track whether the finding is a *defect*, not only whether the underlying fact
+is certain. A dead store is certainly a dead store; that is not the same claim.
+
 ## The dynamic layer (2026-08-21)
 
 Built as a separate layer from `src/tools`, with its own report section above
