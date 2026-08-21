@@ -139,6 +139,12 @@ struct Cli {
     #[arg(long, value_name = "LIST", default_value = "asan,valgrind")]
     profiles: String,
 
+    /// Keep the instrumented build trees instead of deleting them. One full
+    /// build per profile, so this is the largest thing a run leaves behind --
+    /// worth keeping only to re-run a failing case by hand.
+    #[arg(long)]
+    keep_dynamic_builds: bool,
+
     /// Seconds any single instrumented run may take. A sanitizer that hangs is
     /// not hypothetical -- MSan hangs symbolizing its own report on some hosts.
     #[arg(long, default_value_t = 900)]
@@ -422,6 +428,13 @@ fn main() -> Result<()> {
     }
     if cli.ikos {
         let _ = std::fs::remove_dir_all(&ikos_scratch);
+    }
+    // The instrumented builds are the largest thing Kordon leaves behind --
+    // one full build tree per profile, 154 MB for a small Qt project. Keeping
+    // them per-pid meant every run added another copy under /tmp with nothing
+    // ever removing it.
+    if cli.dynamic && !cli.keep_dynamic_builds {
+        let _ = std::fs::remove_dir_all(&dyn_scratch);
     }
 
     if let Some(required) = &cli.require_cwe {

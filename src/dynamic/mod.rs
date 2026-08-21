@@ -143,6 +143,25 @@ fn last_meaningful_line(text: &str) -> String {
         .to_string()
 }
 
+/// Find the CMake source directory at or above the analyzed path.
+///
+/// Analysing a subdirectory is the normal way to iterate -- `kordon src/` on a
+/// project whose `CMakeLists.txt` sits at the root is not a mistake, and the
+/// static layer handles it because the compile database supplies the flags.
+/// The dynamic layer has to configure a build, so it needs the source root,
+/// and looking only in the analysed directory made every such run skip with a
+/// message that read like the project had no CMake at all.
+fn cmake_source(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join("CMakeLists.txt").is_file() {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 fn tool(profile: &Profile) -> Tool {
     Tool::new(profile.name)
 }
@@ -169,13 +188,16 @@ fn run_profile(
     if !profile.wrapper.is_empty() && !crate::tools::available(profile.wrapper[0]) {
         return ToolRun::skipped(tool(profile), format!("{} not installed", profile.wrapper[0]));
     }
-    if !config.source.join("CMakeLists.txt").is_file() {
+    let Some(source) = cmake_source(&config.source) else {
         return ToolRun::skipped(
             tool(profile),
-            "no CMakeLists.txt -- the dynamic layer builds its own instrumented \
-variants and has no other way to do that",
+            format!(
+                "no CMakeLists.txt at or above {} -- the dynamic layer builds its own \
+instrumented variants and has no other way to do that",
+                config.source.display()
+            ),
         );
-    }
+    };
 
     let instrumented = profile.requires_clang;
     if instrumented && !crate::tools::available("clang++") {
@@ -187,7 +209,7 @@ variants and has no other way to do that",
     let mut configure = Command::new("cmake");
     configure
         .arg("-S")
-        .arg(&config.source)
+        .arg(&source)
         .arg("-B")
         .arg(&build_dir)
         .arg("-DCMAKE_BUILD_TYPE=Debug")
@@ -238,7 +260,7 @@ variants and has no other way to do that",
         _ => {}
     }
 
-    execute(config, analysis_root, profile, &build_dir, table)
+    execute(config, analysis_root, profile, &build_dir, table, &source)
 }
 
 /// Run the command and turn whatever it printed into findings.
@@ -248,6 +270,7 @@ fn execute(
     profile: &Profile,
     build_dir: &Path,
     table: &CweTable,
+    source: &Path,
 ) -> ToolRun {
     // One XML file per traced process. `%p` is valgrind's own pid placeholder;
     // a single fixed filename would have every child overwrite the last, so a
@@ -320,6 +343,11 @@ fn execute(
         .collect();
 
     let mut notes = Vec::new();
+    // Say which directory was configured when it is not the one analysed, so
+    // the upward search is visible rather than magic.
+    if source != config.source.as_path() {
+        notes.push(format!("configured from {}", source.display()));
+    }
     if findings.is_empty() {
         notes.push(format!(
             "no defect observed -- this means the paths the command reached are clean, \
