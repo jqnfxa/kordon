@@ -19,6 +19,50 @@ engines agree on, and reports the gaps. 60 tests green.
 | Compile database | `src/compile_db.rs` | parsed once; decides which files are in the build |
 | Kordon's own checks | `src/tools/clang_query.rs` | AST matchers via clang-query; CWE-191 |
 
+## Coverage as of 2026-08-21
+
+Two denominators, because they disagree and both matter. "Reported" is every
+position the reference tool listed; "acted on" is the subset whose site or
+immediate context changed between the broken and corrected trees.
+
+| basis | coverage |
+|---|---|
+| vs everything the reference tool reported | **245/379 = 65%** |
+| vs defects the maintainers actually fixed | **131/176 = 74%** |
+| function level (within 25 lines) | 343/379 = 91% |
+
+| CWE | reported | acted on |
+|---|---|---|
+| 763 | 4/4 100% | 4/4 100% |
+| 369 | 3/3 100% | 3/3 100% |
+| 416 | 1/1 100% | 1/1 100% |
+| 191 | 59/60 98% | 31/32 97% |
+| 190 | 28/30 93% | 6/7 86% |
+| 457 | 25/27 93% | 10/12 83% |
+| 476 | 11/12 92% | 5/6 83% |
+| 563 | 69/74 93% | 53/56 95% |
+| **119** | **44/86 51%** | 20/33 61% |
+| **401** | **6/86 7%** | 2/25 8% |
+| 415 | 0/1 | 0/1 -- confirmed false positive, silence is correct |
+
+Everything except CWE-119 and CWE-401 is at or above 83% against acted-on
+defects. Those two are the whole remaining gap, and they are not the same kind
+of gap:
+
+- **CWE-401's 7% is largely correct and will not move.** Its ground truth is
+  dominated by positions on a closing brace -- leak-at-end-of-scope for locals
+  of RAII classes that free in their destructors. Confirmed false positives.
+  The real defects in that class are found, but reported per-class rather than
+  per-line, so a line-keyed score cannot see them.
+- **CWE-119's 51% is a real gap.** Breakdown of the 42 remaining misses:
+  constant index on `operator[]` 25, two containers 13, single subscript 10,
+  and one non-subscript. The `operator[]` constant-index family is the largest
+  and was measured and rejected: including it doubled ground-truth reach and
+  took specificity from -81% to -13%.
+
+Report shape at these numbers: **441 detailed findings covering 104 acted-on
+defects (4.2:1)**, with 6669 summarized low-confidence findings behind them.
+
 ## Measured results
 
 Ground truth: `/home/shard/VsCode/acl/report/problems.md` — **280 confirmed
