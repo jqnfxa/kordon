@@ -551,6 +551,76 @@ ground-truth reach (3 to 6) but took specificity to -13% and volume from 21 to
 is usually a real constant, not an assumption. That is recall bought by
 shape-counting, which is the thing this project keeps rejecting.
 
+## The fallible-init chain: three formulations, none shipped (2026-08-20)
+
+Target was CWE-252 -> 476 -> 690, currently at zero coverage. Three matchers
+were built and measured; all are recorded here so they are not rebuilt.
+
+**1. Caller-side, constructor body as the fallibility signal.** A local of a
+class whose constructor contains `new (std::nothrow)`, subscripted with no
+bool-returning query called on it. Works exactly on the fixture. **Zero
+findings on the reference corpus** -- the constructor is defined in
+`vector.cpp`, so from every other translation unit only the declaration is
+visible and `hasDescendant(cxxConstructorDecl(...))` has no body to see. This is
+the CTU boundary again, and clang-query has no CTU.
+
+**2. Caller-side, class signature as the signal.** Fallibility inferred from
+what the header shows: a raw-pointer member, a bool-returning method, a
+destructor. **1227 findings, -0.7% between trees** -- a pure shape-counter,
+because on this codebase nobody checks these queries anywhere, so "did not
+check" is endemic rather than diagnostic. Narrowing to runtime-sized
+constructions (`Vector v(n)`, not `Vector v(4)`) cut it to 89 positions and 5
+acted-on defects, 18:1 -- better, still not tier-worthy.
+
+**3. Class-internal: a method dereferencing its own raw-pointer member**,
+linked to a fallible constructor *of the same class in the same TU*, with no
+null test on that member in the method. This one is well targeted: **73
+positions, 0 on the corrected tree (-100%)**, confined entirely to
+`vector.cpp`/`matrix.cpp` -- the two genuinely fallible classes -- and silent
+on the corrected tree because the rewrite replaced nothrow-new with
+`unique_ptr`. Best responsiveness of anything measured here.
+
+**Not shipped, because it adds nothing.** All 73 positions are already reported
+by Kordon at the exact line, under CWE-119. It would add 73 findings and zero
+detections, taking the detailed tier from 3.9:1 to 4.6:1 -- a precision loss
+for a relabelling. Its claim (CWE-690, the fallible-init chain) is more
+accurate than CWE-119 for those lines, so it is worth revisiting if the report
+ever grows a way to correct a finding's class rather than add a second one.
+
+**Why formulation 3 is still the right shape**: the reference corpus's actual
+CWE-476 defects are not callers misusing a local. They are
+`res[i] += m_data[i * m_col + j]` -- a class dereferencing its own member,
+which may be null because its constructor failed quietly. The caller-side model
+was simply the wrong picture of this defect class.
+
+## A guard deleted by a semicolon — the highest-precision check in the tool
+
+Found while investigating why formulation 3 exempted `matrix.cpp:219`:
+
+```cpp
+void Matrix::vecMult(const Vector &v, Vector &res) const
+{
+    if(v.m_length == m_col && m_data && v.m_data);   // <-- the guard is gone
+    {
+        ...  res[i] += m_data[i * m_col + j] * v[j];
+    }
+}
+```
+
+The precondition is written correctly -- non-null buffers, matching extents --
+and then discarded by the semicolon. `Matrix::trVecMult` has the same defect.
+
+`bugprone-suspicious-semicolon` catches both, mapped to CWE-483, and **Kordon
+was discarding them as out of scope.** Two findings across 452 translation
+units, both genuine, and both fixed by the maintainers -- the corrected tree
+carries the identical conditions without the semicolon. A 1:1 ratio, the best
+in the tool, in a class where the absence of a memory-safety guard is provable
+rather than suspected.
+
+CWE-483 is now tier 1. The CWE itself is a control-flow class, which is why it
+was excluded; what makes it in scope is the consequence, since the guard being
+deleted is the one protecting a subscript of a possibly-null buffer.
+
 ## Clang SA does not model allocation failure (2026-08-20)
 
 Measured on clang 18.1.3, with each masking bug removed in turn:

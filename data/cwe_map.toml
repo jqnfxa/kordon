@@ -215,10 +215,15 @@ id = 480
 name = "Use of Incorrect Operator"
 tier = 0
 
+# Tier 1, though the CWE itself is a control-flow class rather than a memory
+# one. `if (guard);` does not weaken the guard, it deletes it -- and where the
+# guard protects a memory access, the consequence is squarely in scope. Both
+# instances on the reference corpus are exactly that: a null-and-extent check
+# written correctly and then disabled by a semicolon, guarding a subscript.
 [[cwe]]
 id = 483
 name = "Incorrect Block Delimitation"
-tier = 0
+tier = 1
 
 [[cwe]]
 id = 481
@@ -517,11 +522,20 @@ confidence = "low"
 
 # `if (x);` -- the body is the empty statement and the block that follows always
 # runs.
+#
+# Medium, not low: this is the highest-precision check in the tool. Two findings
+# across 452 translation units, both genuine, and both fixed by the maintainers
+# -- the corrected tree has the identical conditions without the semicolon. It
+# was previously discarded as out of scope, which meant the one defect class
+# where a memory-safety guard is provably absent never reached the report.
+#
+# Not high, because clang-tidy's own heuristic is indentation-based and an
+# intentional empty body is legal; n=2 does not justify the top tier.
 [[rule]]
 tool = "clang-tidy"
 check = "bugprone-suspicious-semicolon"
 cwe = 483
-confidence = "low"
+confidence = "medium"
 
 [[rule]]
 tool = "clang-tidy"
