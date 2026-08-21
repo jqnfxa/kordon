@@ -575,11 +575,11 @@ fn parallel_extent_matcher() -> String {
     let same_param = "declRefExpr(to(parmVarDecl(equalsBoundNode(\"p\"))))";
     format!(
         "cxxOperatorCallExpr(\
-hasOverloadedOperatorName(\"[]\"), \
+anyOf(hasOverloadedOperatorName(\"[]\"), hasOverloadedOperatorName(\"()\")), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation()), \
 hasArgument(0, {param}), \
-hasAncestor(forStmt(hasCondition(hasDescendant(memberExpr())))), \
+hasAncestor(forStmt()), \
 unless(hasAncestor(forStmt(hasCondition(hasDescendant({same_param}))))), \
 unless(hasAncestor(functionDecl(hasDescendant(\
 ifStmt(hasCondition(hasDescendant({same_param}))))))))"
@@ -615,12 +615,38 @@ ifStmt(hasCondition(hasDescendant({same_param}))))))))"
 /// function containing a real `if` that tests the subscripted parameter; since
 /// `assert` never expands to an `ifStmt`, an assert cannot silence the check.
 ///
-/// Measured across 452 translation units: **52 positions on the broken tree,
-/// 27 on the corrected one (-48%)**, against `pro-bounds-pointer-arithmetic`'s
+/// Measured across 452 translation units: **181 positions on the broken tree,
+/// 151 on the corrected one (-17%)**, against `pro-bounds-pointer-arithmetic`'s
 /// 2326 findings that move -1% between the same two trees. It reaches defects
 /// the reference tool did not list, including `SparseVector::colMult`, where
 /// the index written into the caller's vector comes from stored data
 /// (`pos = m_ppos[i]`) and is bounded by nothing whatsoever.
+///
+/// ### Why the loop bound is not required to be a member
+///
+/// An earlier version required the `for` condition to contain a `memberExpr`,
+/// as a proxy for "bounded by this object's own extent". That scored -48%,
+/// much sharper, and missed the entire matrix-multiply family:
+///
+///     int arows = blc.getRows();          // extent copied into a local first
+///     ...
+///     for (i = 0; i < arows; i += size)
+///       for (k = i; k < i + size; k++)
+///         for (m = i; m < i + size; m++)
+///           res(m,j) += blc(m,k) * a(k,j);   // m runs past arows
+///
+/// The bound is a local, so no `memberExpr` appears in any condition, and `m`
+/// ranges over `[i, i + size)` which overruns `res` whenever `arows` is not a
+/// multiple of `size`. Dropping the requirement takes CWE-119 recall from
+/// 33/86 to 44/86 and specificity from -48% to -17%.
+///
+/// That trade is only acceptable because this check is low confidence and its
+/// findings are summarized rather than detailed: the low tier grows 1.4% for
+/// 11 more ground-truth positions. Measured against the defects the
+/// maintainers actually fixed, rather than against everything the reference
+/// tool reported, the gain is much smaller -- 2 more. Both numbers are real
+/// and they disagree, which is itself the reason this stays out of the
+/// detailed report.
 ///
 /// Low confidence by construction: the two extents may be equal for reasons
 /// no local analysis can see -- built from a common source, or fixed by an
