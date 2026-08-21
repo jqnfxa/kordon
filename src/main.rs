@@ -286,10 +286,18 @@ fn main() -> Result<()> {
         ) {
             Ok(index) => {
                 eprintln!(
-                    "kordon: CTU index built — {} unit(s) indexed, {} failed, {} definitions",
+                    "kordon: CTU index built — {} unit(s) indexed, {} failed, {} definitions{}",
                     index.indexed.len(),
                     index.failed.len(),
-                    index.definition_count()
+                    index.definition_count(),
+                    if index.ambiguous.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", {} ambiguous symbol(s) dropped (defined in more than one unit)",
+                            index.ambiguous.len()
+                        )
+                    }
                 );
                 let (run, graph) = tools::clang_sa::run(
                     &sources,

@@ -122,6 +122,50 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## Two CTU bugs found by running on open source (2026-08-21)
+
+Running Kordon on cJSON (23 TUs) and tinyxml2 surfaced two defects in Kordon
+itself. Both were found the same way: a number that looked plausible and was
+not. `clang-sa-ctu ok, 0 raw findings` on a 5000-line C parser is believable
+right up until you run the same checkers by hand and get ten.
+
+### 1. One ambiguous symbol silently voided the entire CTU pass
+
+`externalDefMap.txt` had 135 entries for 116 distinct keys, and `9:c:@F@main`
+appeared **20 times** -- cJSON builds 20 test executables. Given a duplicated
+key clang does not skip the entry: it rejects the whole index, prints
+`multiple definitions are found for the same key in index`, writes no output at
+all, and **exits 0**.
+
+The index builder did call `dedup()`, which removes identical lines only. A USR
+pointing at two *different* units survives that, which is exactly the `main`
+case. Now grouped by USR, and any symbol with more than one definition is
+dropped and counted -- an ambiguous key carries no information anyway, since
+nothing can say which definition a call resolves to, and `main` is never a CTU
+target because nothing calls it.
+
+Effect on cJSON: **0 findings -> 13**, and 0 plists -> 23. Any project building
+more than one executable was affected, which is most of them.
+
+### 2. A total analysis failure was reported as a clean run
+
+Kordon said `clang-sa-ctu ok, 0 raw findings` for a pass that produced nothing.
+The runner counted findings, and zero findings from zero output is
+indistinguishable from zero findings from a clean project.
+
+The analyzer writes one plist per translation unit even when it has nothing to
+say, so no plists at all is a reliable signal that it never ran. That is now a
+`Failed` outcome naming the unit count, not a `Ran` with an empty list.
+
+This one matters more than the first. The index bug cost findings; this bug is
+the failure mode the whole reporting design exists to prevent, and it was
+sitting in the engine that produces the highest-confidence results.
+
+**What the pair says about method**: both bugs were invisible from the inside.
+The fixture corpus passes, the ACL corpus produces hundreds of CTU findings,
+and 99 unit tests are green -- because the reference codebase happens to build
+one executable. Only an unfamiliar project shaped differently exposed it.
+
 ## GCC-built projects: the compile database needed normalizing (2026-08-21)
 
 Kordon's static engines are clang frontends, but plenty of projects build with

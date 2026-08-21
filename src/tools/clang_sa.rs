@@ -87,11 +87,13 @@ pub fn run(
     let mut findings = Vec::new();
     let mut notes = Vec::new();
     let mut failed_units = 0;
+    let mut reports_written = 0usize;
 
     let mut graph = CallGraph::default();
     for (reports, failed, shard_graph) in shard_results {
         graph.merge(shard_graph);
         failed_units += failed;
+        reports_written += reports.len();
         for report in reports {
             match parse_plist(&report, table) {
                 Ok(mut parsed) => findings.append(&mut parsed),
@@ -116,10 +118,28 @@ pub fn run(
         ));
     }
 
+    // The analyzer writes one plist per translation unit even when it has
+    // nothing to say, so *no* plists at all means it never ran, not that the
+    // code is clean. It reaches that state while exiting 0: a single ambiguous
+    // key in the CTU index makes clang reject the whole index, print
+    // `multiple definitions are found for the same key in index`, and produce
+    // no output. Measured on cJSON, whose 20 test executables define `main` 20
+    // times -- every CTU finding for the project was silently lost and the
+    // engine line read "ok, 0 raw findings".
+    let outcome = if reports_written == 0 && !sources.is_empty() {
+        ToolOutcome::Failed(format!(
+            "produced no output for any of {} translation unit(s) — the analyzer \
+did not run, which is not the same as finding nothing",
+            sources.len()
+        ))
+    } else {
+        ToolOutcome::Ran
+    };
+
     (
         ToolRun {
             tool: tool(),
-            outcome: ToolOutcome::Ran,
+            outcome,
             findings,
             notes,
         },

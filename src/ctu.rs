@@ -125,6 +125,10 @@ pub struct CtuIndex {
     /// USR -> defining translation unit. This is the "which file defines what"
     /// index; the call graph is derived from it.
     pub definitions: BTreeMap<String, PathBuf>,
+    /// Symbols defined in more than one unit, dropped from the map because an
+    /// ambiguous key makes clang reject the whole index. Reported, since these
+    /// are the calls CTU will not resolve.
+    pub ambiguous: Vec<String>,
 }
 
 impl CtuIndex {
@@ -189,18 +193,44 @@ pub fn build_index(
 
     let mut indexed = Vec::new();
     let mut failed = Vec::new();
-    let mut map_lines = Vec::new();
     let mut definitions = BTreeMap::new();
+    // usr -> every unit that defines it. Grouped rather than appended,
+    // because a key defined twice has to be dropped, not merely deduplicated.
+    let mut by_usr: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
 
     for shard in per_shard {
         indexed.extend(shard.indexed);
         failed.extend(shard.failed);
         for (usr, source) in shard.entries {
-            // The analyzer resolves paths in the map relative to the CTU dir.
-            let rel = ast_relative_path(&source);
-            map_lines.push(format!("{usr} {}", rel.display()));
+            by_usr.entry(usr.clone()).or_default().insert(source.clone());
             definitions.insert(usr, source);
         }
+    }
+
+    // A USR with more than one definition makes the whole index unusable.
+    // clang does not skip the ambiguous entry -- it rejects the index, emits
+    // `multiple definitions are found for the same key in index`, produces no
+    // output at all, and still exits 0.
+    //
+    // This is not an exotic case. Any project that builds more than one
+    // executable defines `main` more than once, and cJSON's 20 test binaries
+    // did exactly that: 135 entries, 116 distinct keys, `main` appearing 20
+    // times, and every CTU finding for the entire project silently lost.
+    //
+    // Dropping the ambiguous keys is the right repair rather than a
+    // workaround: with several definitions there is no way to say which one a
+    // call resolves to, so the entry carries no information. `main` in
+    // particular is never a CTU target, since nothing calls it.
+    let mut ambiguous = Vec::new();
+    let mut map_lines = Vec::new();
+    for (usr, sources) in &by_usr {
+        if sources.len() > 1 {
+            ambiguous.push(usr.clone());
+            continue;
+        }
+        // The analyzer resolves paths in the map relative to the CTU dir.
+        let rel = ast_relative_path(sources.iter().next().expect("checked non-empty"));
+        map_lines.push(format!("{usr} {}", rel.display()));
     }
 
     if indexed.is_empty() {
@@ -212,7 +242,6 @@ pub fn build_index(
     }
 
     map_lines.sort();
-    map_lines.dedup();
     let map_path = dir.join("externalDefMap.txt");
     std::fs::write(&map_path, map_lines.join("\n") + "\n")
         .with_context(|| format!("could not write {}", map_path.display()))?;
@@ -225,6 +254,7 @@ pub fn build_index(
         indexed,
         failed,
         definitions,
+        ambiguous,
     })
 }
 
@@ -380,6 +410,29 @@ fn ast_relative_path(source: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_symbol_defined_twice_is_dropped_not_deduplicated() {
+        // Identical lines dedup; a USR pointing at two *different* units does
+        // not, and one such key makes clang reject the entire index -- it
+        // prints "multiple definitions are found for the same key in index",
+        // writes nothing, and exits 0. Measured on cJSON, where 20 test
+        // executables define `main` and every CTU finding was silently lost.
+        let mut by_usr: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+        by_usr.entry("c:@F@main".into()).or_default().insert("/a.c".into());
+        by_usr.entry("c:@F@main".into()).or_default().insert("/b.c".into());
+        by_usr.entry("c:@F@parse".into()).or_default().insert("/lib.c".into());
+        by_usr.entry("c:@F@parse".into()).or_default().insert("/lib.c".into());
+
+        let kept: Vec<_> = by_usr.iter().filter(|(_, v)| v.len() == 1).map(|(k, _)| k).collect();
+        let dropped: Vec<_> = by_usr.iter().filter(|(_, v)| v.len() > 1).map(|(k, _)| k).collect();
+        // Defined once in two shards: the same definition, safe to keep.
+        assert_eq!(kept, ["c:@F@parse"]);
+        // Genuinely ambiguous: nothing can say which one a call resolves to.
+        assert_eq!(dropped, ["c:@F@main"]);
+    }
+
     use super::*;
 
     #[test]
