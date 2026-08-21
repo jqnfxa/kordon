@@ -79,6 +79,64 @@ inert. A local's extent is usually established by its own construction in the
 same function, which is why subscripting it under an unrelated bound is normal
 rather than suspicious. That cluster is not reachable by widening this shape.
 
+## The dynamic layer (2026-08-21)
+
+Built as a separate layer from `src/tools`, with its own report section above
+the static findings and `Proof::Refuted` on every finding. Three profiles:
+`asan` (ASan + LSan + UBSan in one instrumented build), `msan`, `valgrind`.
+
+Verified end to end against `testdata/dynamic/`, a small CTest project where
+each program commits exactly one defect. ASan observes CWE-401/416/787/190;
+valgrind observes CWE-401/416/125/457 -- including the uninitialised read that
+ASan structurally cannot see, since it tracks addressability rather than
+definedness.
+
+### Things measurement forced
+
+- **Frames are `FILE:LINE:COL` at -O0 and `FILE:LINE` at -O1.** Requiring the
+  column dropped every ASan frame in an optimised build, and a report whose
+  frames are all dropped is discarded as frameless -- so the defect vanished
+  while the run looked clean.
+- **Both output streams must be read.** A sanitizer writes to the child's
+  stderr; `ctest --output-on-failure` captures that and re-prints it on its own
+  stdout. Reading stderr alone finds nothing.
+- **valgrind needs `--trace-children=yes`.** Wrapping a test harness without it
+  traces the harness, reports nothing, and reads exactly like a clean run.
+- **UBSan ids must be curated, not derived.** Its messages embed addresses, so
+  an id built from the text differs every run and nothing dedups or maps.
+  `UBSAN_PHRASES` is the same curation the cppcheck CWE overrides are.
+- **The leak fixture needs `opaque_malloc`.** At -O1 clang deletes a malloc
+  whose result is unused, and the fixture then reports nothing. It must also
+  *not* store the pointer in a global -- still-reachable memory is not a leak
+  to either engine. The static leak fixtures need the opposite, which is the
+  `_static`/`_runtime` split already recorded here, seen from the other side.
+
+### MSan is unreliable on this host, and that is reported not hidden
+
+It hangs symbolizing its own report: reliably with
+`-fsanitize-memory-track-origins` (now removed from the profile), and
+intermittently without -- the same binary completed one run and hung the next.
+Every run therefore has a deadline, and a timeout produces a FAILED line naming
+it. A hung sanitizer is indistinguishable from a slow test suite, and both are
+indistinguishable from a clean result if nothing watches the clock.
+
+**Pinning clang is done only for MSan**, which has no g++ equivalent. Pinning it
+for ASan too also switched the symbolizer, and LLVM's hangs here where GCC's
+addr2line path does not -- turning a working profile into a timeout. That is
+the second time in this project that forcing a toolchain choice changed
+something other than the thing intended; the first was the clang-specific
+compile database breaking gcc's analyzer.
+
+### Classification
+
+valgrind's `InvalidRead` covers both CWE-125 and CWE-416 and only its
+`<auxwhat>` says which, so that text is carried into the message and the table
+discriminates on it -- the same mechanism the cppcheck overrides use.
+
+`--require-cwe` now spans both layers. The dynamic layer is deliberately kept
+out of the static findings list, and leaving it out of the selftest as well
+would have reintroduced exactly the failure that flag exists to prevent.
+
 ## Coverage as of 2026-08-21
 
 Two denominators, because they disagree and both matter. "Reported" is every

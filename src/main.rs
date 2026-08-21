@@ -455,10 +455,17 @@ fn selftest(report: &Report, required: &str) -> Result<()> {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
+    // Both layers. The dynamic layer is kept out of the static findings list
+    // so that a pattern match cannot borrow a runtime observation's standing,
+    // but a class observed at run time is unambiguously detected -- and the
+    // whole point of this flag is that a configuration regression must not be
+    // able to look like clean code. Leaving the dynamic layer unguarded would
+    // reintroduce exactly that.
     let found: Vec<u32> = report
         .in_scope()
         .iter()
         .filter_map(|m| m.primary.cwe)
+        .chain(report.dynamic.iter().filter_map(|f| f.cwe))
         .collect();
 
     let missing: Vec<u32> = wanted

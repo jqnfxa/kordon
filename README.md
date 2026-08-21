@@ -158,6 +158,13 @@ kordon testdata/basic --require-cwe 369,401,415,416,476,563,763
 This exits non-zero if any listed class stops being detected. Without it, a
 configuration regression looks exactly like clean code.
 
+The dynamic layer has its own, and it guards the whole pipeline — instrumented
+build, execution, report parsing, CWE mapping:
+
+```bash
+kordon testdata/dynamic --dynamic --profiles asan --require-cwe 190,401,416,787
+```
+
 Two measured constraints the fixtures encode:
 
 *Leak cases appear twice*, in `_static` and `_runtime` form. A sanitizer needs
