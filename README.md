@@ -8,9 +8,9 @@ Kordon drives them, normalizes their mutually incompatible output into one
 schema, maps every finding to a CWE, merges what the engines independently
 agree on, and reports honestly on what none of them covered.
 
-**Status: early but working end to end.** Five engines, cross-translation-unit
-analysis, and abstract interpretation are wired up. No sanitizer layer yet, so
-this is a static-only tool today.
+**Status: early but working end to end.** Five static engines, cross-translation-unit
+analysis, abstract interpretation, and a dynamic layer (sanitizers and valgrind)
+are wired up.
 
 ## Engines
 
@@ -22,6 +22,26 @@ this is a static-only tool today.
 | cppcheck | Second opinion with different blind spots | on by default |
 | clang-query | Kordon's own AST matchers, for gaps with no off-the-shelf check | on by default |
 | IKOS | Abstract interpretation — the only engine that can *prove* an access safe | `--ikos` |
+
+The dynamic layer is separate, because it makes a different kind of claim — not
+"this shape is risky" but "the program did this":
+
+| Profile | What it observes | Build |
+|---|---|---|
+| `asan` | out-of-bounds, use-after-free, double free, leaks, undefined behaviour | ASan+LSan+UBSan in one instrumented build |
+| `msan` | uninitialised reads — the family with the weakest static story | separate build; cannot combine with ASan |
+| `valgrind` | an independent engine with different blind spots | no instrumentation needed |
+
+```bash
+kordon path/to/src --dynamic --run "ctest --output-on-failure"
+kordon path/to/src --dynamic --profiles asan,valgrind,msan
+```
+
+It only sees what the command executes: whatever line coverage `--run` reaches
+is the hard ceiling, and silence means "not exercised" at least as often as it
+means "correct". Every run has a deadline — a sanitizer that hangs is not
+hypothetical, and a hang is indistinguishable from a clean result if nothing is
+watching the clock.
 
 Kordon's own checks are `kordon-unsigned-subtraction` (CWE-191),
 `kordon-unsigned-addition` (CWE-190), `kordon-manual-ownership-flag` (CWE-401),
@@ -119,6 +139,9 @@ These are measured on a real 486-file codebase, not estimated.
   guarded one are currently indistinguishable to Kordon.
 - **Absence of findings is never proof of safety.** A clean report means these
   engines did not flag it, and nothing more.
+- **The dynamic layer is bounded by test coverage.** It reports defects that
+  actually happened, which is the strongest evidence Kordon produces, but only
+  along the paths the run command reached.
 
 ## Test corpus
 

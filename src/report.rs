@@ -11,11 +11,17 @@ use std::collections::BTreeMap;
 use crate::ctu::CallGraph;
 use crate::cwe::CweTable;
 use crate::dedup::MergedFinding;
-use crate::finding::{Confidence, CweSource, Proof};
+use crate::finding::{Confidence, CweSource, Finding, Proof};
 use crate::tools::{ToolOutcome, ToolRun};
 
 pub struct Report<'a> {
     pub runs: &'a [ToolRun],
+    /// The dynamic layer's engines, kept apart from `runs` because the two
+    /// layers make different claims and the report must not blur them.
+    pub dynamic_runs: &'a [ToolRun],
+    /// Defects observed at run time. Not merged into `merged`: a static
+    /// finding must never inherit a runtime observation's standing.
+    pub dynamic: &'a [Finding],
     pub merged: &'a [MergedFinding],
     pub table: &'a CweTable,
     /// Files Kordon handed to the engines.
@@ -87,6 +93,9 @@ impl<'a> Report<'a> {
         let mut out = String::new();
 
         out.push_str(&self.render_engines());
+        // First, because it is the only section whose findings are observations
+        // rather than inferences.
+        out.push_str(&self.render_dynamic());
         out.push_str(&self.render_findings(verbose, show_all));
         out.push_str(&self.render_call_graph());
         out.push_str(&self.render_gaps());
@@ -95,6 +104,70 @@ impl<'a> Report<'a> {
         out.push_str(&self.render_unproven(show_unproven));
         out.push_str(&self.render_caveats());
 
+        out
+    }
+
+    /// Defects the program actually committed.
+    ///
+    /// Deliberately its own section, above the static findings. Everything
+    /// below is an inference from the shape or the paths of the code; this is a
+    /// record of what happened when it ran. Merging the two would be the same
+    /// error as reporting a pattern match as a proof.
+    fn render_dynamic(&self) -> String {
+        let ran: Vec<_> = self.dynamic_runs.iter().filter(|r| r.ran()).collect();
+        if ran.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::from("\n═══ Observed at run time ═══\n\n");
+        if self.dynamic.is_empty() {
+            out.push_str(
+                "  Nothing was observed. The paths the command reached are clean;\n\
+                \x20 it says nothing about the paths it did not reach.\n",
+            );
+            return out;
+        }
+
+        // A runtime observation landing on a line a static engine also flagged
+        // is the strongest evidence this tool can produce, and it is worth
+        // naming rather than leaving the reader to cross-reference by eye.
+        let static_positions: std::collections::HashSet<_> = self
+            .merged
+            .iter()
+            .map(|m| (m.primary.file.clone(), m.primary.line))
+            .collect();
+
+        let mut confirmed = 0usize;
+        for finding in self.dynamic {
+            let corroborates = static_positions.contains(&(finding.file.clone(), finding.line));
+            if corroborates {
+                confirmed += 1;
+            }
+            let cwe = match finding.cwe {
+                Some(cwe) => format!("CWE-{cwe}"),
+                None => "unmapped".to_string(),
+            };
+            out.push_str(&format!(
+                "  {}:{}:{}  {}\n      {}\n      via {} [{}]{}\n",
+                finding.file.display(),
+                finding.line,
+                finding.column,
+                cwe,
+                finding.message,
+                finding.tool,
+                finding.native_id,
+                if corroborates {
+                    " — also flagged statically"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push_str(&format!(
+            "\n  {} defect(s) observed; {} of them at a line a static engine also flagged.\n",
+            self.dynamic.len(),
+            confirmed
+        ));
         out
     }
 
@@ -148,15 +221,32 @@ impl<'a> Report<'a> {
         let mut out = String::new();
         out.push_str("\n═══ Engines ═══\n\n");
 
-        for run in self.runs {
+        let describe = |run: &ToolRun| -> String {
             let status = match &run.outcome {
                 ToolOutcome::Ran => format!("ok, {} raw findings", run.findings.len()),
                 ToolOutcome::Skipped(why) => format!("SKIPPED — {why}"),
                 ToolOutcome::Failed(why) => format!("FAILED — {why}"),
             };
-            out.push_str(&format!("  {:<14} {}\n", run.tool.as_str(), status));
+            let mut line = format!("  {:<14} {}\n", run.tool.as_str(), status);
             for note in &run.notes {
-                out.push_str(&format!("  {:<14} note: {}\n", "", note));
+                line.push_str(&format!("  {:<14} note: {}\n", "", note));
+            }
+            line
+        };
+
+        for run in self.runs {
+            out.push_str(&describe(run));
+        }
+
+        // The dynamic engines are listed under their own heading rather than
+        // mixed in, and they are listed even when the layer did not run. An
+        // engine that timed out or was never asked for has to be visible:
+        // "no defect observed" and "nothing was executed" look identical in a
+        // findings list and mean opposite things.
+        if !self.dynamic_runs.is_empty() {
+            out.push_str("\n  dynamic layer (only sees what the run command executes):\n");
+            for run in self.dynamic_runs {
+                out.push_str(&describe(run));
             }
         }
 

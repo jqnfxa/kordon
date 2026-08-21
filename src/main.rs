@@ -10,6 +10,7 @@ mod compile_db;
 mod ctu;
 mod cwe;
 mod dedup;
+mod dynamic;
 mod finding;
 mod offsets;
 mod report;
@@ -120,6 +121,28 @@ struct Cli {
     /// report is not a build gate until its findings have been triaged.
     #[arg(long)]
     fail_on_finding: bool,
+
+    /// Run the dynamic layer: build instrumented variants and execute the
+    /// command given by --run under each. Reports defects the program actually
+    /// committed, which is a different and stronger claim than anything the
+    /// static engines make -- and is bounded by whatever the command reaches.
+    #[arg(long)]
+    dynamic: bool,
+
+    /// The command that exercises the code, run from each instrumented build
+    /// directory. Whatever line coverage it reaches is the ceiling of this
+    /// layer; there is no way around that.
+    #[arg(long, value_name = "CMD", default_value = "ctest --output-on-failure")]
+    run: String,
+
+    /// Comma-separated dynamic profiles: asan, msan, valgrind.
+    #[arg(long, value_name = "LIST", default_value = "asan,valgrind")]
+    profiles: String,
+
+    /// Seconds any single instrumented run may take. A sanitizer that hangs is
+    /// not hypothetical -- MSan hangs symbolizing its own report on some hosts.
+    #[arg(long, default_value_t = 900)]
+    dynamic_timeout: u64,
 
     /// Comma-separated CWEs that MUST be found, else exit non-zero. Used
     /// against testdata/ to verify Kordon's own configuration still detects
@@ -313,6 +336,38 @@ fn main() -> Result<()> {
         ));
     }
 
+    // The dynamic layer is kept out of `runs` on purpose. Its findings are
+    // observations of a defect happening, and merging them into the static
+    // tiers would let a pattern match inherit that standing.
+    let dyn_scratch = std::env::temp_dir().join(format!("kordon-dyn-{}", std::process::id()));
+    let dynamic_runs: Vec<ToolRun> = if cli.dynamic {
+        let wanted: Vec<&dynamic::Profile> = cli
+            .profiles
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|name| dynamic::PROFILES.iter().find(|p| p.name == name).copied())
+            .collect();
+        let config = dynamic::DynamicConfig {
+            source: canonical(&cli.path),
+            command: cli.run.clone(),
+            scratch: dyn_scratch.clone(),
+            timeout_secs: cli.dynamic_timeout,
+            jobs: cli.jobs,
+        };
+        dynamic::run(&config, &canonical(&cli.path), &wanted, &table)
+    } else {
+        dynamic::PROFILES
+            .iter()
+            .map(|p| {
+                ToolRun::skipped(
+                    crate::finding::Tool::new(p.name),
+                    "--dynamic not given; nothing was executed, so no defect was observed",
+                )
+            })
+            .collect()
+    };
+
     // Only findings from engines that actually completed may enter the report.
     let raw: Vec<_> = runs
         .iter()
@@ -335,8 +390,17 @@ fn main() -> Result<()> {
 
     let merged = dedup::merge(raw);
 
+    let dynamic_findings: Vec<_> = dynamic_runs
+        .iter()
+        .filter(|r| r.ran())
+        .flat_map(|r| r.findings.iter().cloned())
+        .filter(|f| f.file.starts_with(&analysis_root))
+        .collect();
+
     let report = Report {
         runs: &runs,
+        dynamic_runs: &dynamic_runs,
+        dynamic: &dynamic_findings,
         merged: &merged,
         table: &table,
         analyzed_files: sources.len(),

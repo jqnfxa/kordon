@@ -118,6 +118,11 @@ name = "Improper Initialization"
 tier = 1
 
 [[cwe]]
+id = 823
+name = "Use of Out-of-range Pointer Offset"
+tier = 1
+
+[[cwe]]
 id = 824
 name = "Access of Uninitialized Pointer"
 tier = 1
@@ -1111,3 +1116,209 @@ tool = "cppcheck"
 check = "redundantAssignment"
 cwe = 563
 confidence = "medium"
+
+# ---------------------------------------------------------------- dynamic layer
+#
+# Runtime evidence, not pattern matching. Every rule below fires only when the
+# program actually committed the defect on a real input, which is why the
+# runners set Proof::Refuted and high confidence rather than reading it from
+# here. What the table still owns is the classification: a sanitizer names a
+# defect in its own vocabulary and never names a CWE.
+#
+# The class strings are the sanitizers' own, normalized only by dropping the
+# varying address (`heap-use-after-free on address 0x...` -> `heap-use-after-free`).
+
+[[rule]]
+tool = "asan"
+check = "heap-use-after-free"
+cwe = 416
+
+[[rule]]
+tool = "asan"
+check = "double-free"
+cwe = 415
+
+# 122 is the precise class but is not in the catalog; 787 is the parent Kordon
+# targets and is what an out-of-bounds heap write is.
+[[rule]]
+tool = "asan"
+check = "heap-buffer-overflow"
+cwe = 787
+
+[[rule]]
+tool = "asan"
+check = "stack-buffer-overflow"
+cwe = 787
+
+[[rule]]
+tool = "asan"
+check = "global-buffer-overflow"
+cwe = 787
+
+[[rule]]
+tool = "asan"
+check = "stack-use-after-return"
+cwe = 562
+
+[[rule]]
+tool = "asan"
+check = "stack-use-after-scope"
+cwe = 562
+
+[[rule]]
+tool = "asan"
+check = "alloc-dealloc-mismatch"
+cwe = 763
+
+[[rule]]
+tool = "asan"
+check = "SEGV"
+cwe = 476
+
+# LSan ships inside ASan, so its findings arrive under the asan profile too.
+[[rule]]
+tool = "asan"
+check = "direct-leak"
+cwe = 401
+
+[[rule]]
+tool = "asan"
+check = "indirect-leak"
+cwe = 401
+
+# UBSan likewise composes into the asan build. Its class is the message text
+# before the first colon, kebab-cased.
+[[rule]]
+tool = "asan"
+check = "signed-integer-overflow"
+cwe = 190
+
+[[rule]]
+tool = "asan"
+check = "unsigned-integer-overflow"
+cwe = 191
+
+[[rule]]
+tool = "asan"
+check = "division-by-zero"
+cwe = 369
+
+[[rule]]
+tool = "asan"
+check = "index-out-of-bounds"
+cwe = 125
+
+# UBSan's object-size check: the access is in valid memory but the object it
+# claims to reach does not fit there. An out-of-bounds access by any other name.
+[[rule]]
+tool = "asan"
+check = "insufficient-space-for-object"
+cwe = 787
+
+[[rule]]
+tool = "asan"
+check = "pointer-overflow"
+cwe = 823
+
+[[rule]]
+tool = "asan"
+check = "call-of-null-pointer"
+cwe = 476
+
+[[rule]]
+tool = "asan"
+check = "reference-binding-to-null-pointer"
+cwe = 476
+
+[[rule]]
+tool = "asan"
+check = "vla-bound-not-positive"
+cwe = 129
+
+[[rule]]
+tool = "asan"
+check = "load-of-null-pointer"
+cwe = 476
+
+[[rule]]
+tool = "asan"
+check = "member-access-within-null-pointer"
+cwe = 476
+
+[[rule]]
+tool = "asan"
+check = "null-pointer-passed-as-argument"
+cwe = 476
+
+[[rule]]
+tool = "msan"
+check = "use-of-uninitialized-value"
+cwe = 457
+
+# valgrind memcheck kinds, verbatim from its <kind> element.
+# InvalidRead and InvalidWrite each cover two different defects, and only the
+# auxiliary text distinguishes them: "inside a block of size N free'd" is a use
+# after free, "N bytes after a block" is an out-of-bounds access. The runner
+# carries auxwhat into the message so these can discriminate on it. Order
+# matters -- the unqualified rule below is the fallback.
+[[rule]]
+tool = "valgrind"
+check = "InvalidRead"
+cwe = 416
+message_contains = "free'd"
+
+[[rule]]
+tool = "valgrind"
+check = "InvalidRead"
+cwe = 125
+
+[[rule]]
+tool = "valgrind"
+check = "InvalidWrite"
+cwe = 416
+message_contains = "free'd"
+
+[[rule]]
+tool = "valgrind"
+check = "InvalidWrite"
+cwe = 787
+
+[[rule]]
+tool = "valgrind"
+check = "InvalidFree"
+cwe = 415
+
+[[rule]]
+tool = "valgrind"
+check = "MismatchedFree"
+cwe = 763
+
+[[rule]]
+tool = "valgrind"
+check = "Leak_DefinitelyLost"
+cwe = 401
+
+[[rule]]
+tool = "valgrind"
+check = "Leak_IndirectlyLost"
+cwe = 401
+
+[[rule]]
+tool = "valgrind"
+check = "UninitCondition"
+cwe = 457
+
+[[rule]]
+tool = "valgrind"
+check = "UninitValue"
+cwe = 457
+
+[[rule]]
+tool = "valgrind"
+check = "SyscallParam"
+cwe = 457
+
+[[rule]]
+tool = "valgrind"
+check = "Overlap"
+cwe = 119
