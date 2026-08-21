@@ -515,10 +515,26 @@ impl<'a> Report<'a> {
         // Must track what actually ran: claiming "no CTU" after a CTU pass, or
         // vice versa, is exactly the kind of quiet inaccuracy this section
         // exists to prevent.
-        if self.call_graph.is_empty() {
+        //
+        // Keyed on whether the CTU engine ran, not on whether the call graph
+        // came back non-empty. Those differ: a project whose translation units
+        // genuinely do not call across files indexes fine and yields no edges,
+        // and reporting that as "cross-TU analysis did not run -- pass --ctu"
+        // told a user to pass a flag they had already passed.
+        let ctu_ran = self
+            .runs
+            .iter()
+            .any(|r| r.ran() && r.tool.as_str().contains("ctu"));
+        if !ctu_ran {
             out.push_str(
                 "  • Single translation unit only. Cross-TU analysis did not run, so any\n    \
                  function defined in another .cpp was opaque to the analyzer. Pass --ctu.\n",
+            );
+        } else if self.call_graph.is_empty() {
+            out.push_str(
+                "  • Cross-TU analysis ran and found no calls between translation units.\n    \
+                 Either the units are genuinely independent, or the ones that link them\n    \
+                 failed to index -- the engine list above says which.\n",
             );
         } else {
             out.push_str(
