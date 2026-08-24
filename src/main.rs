@@ -428,6 +428,30 @@ fn main() -> Result<()> {
         .collect();
     let external = before - raw.len();
 
+    // Suppressions run before merging, so a removed finding cannot raise a
+    // real one's confidence through corroboration on its way out.
+    let suppressed = match tools::clang_query::find_binary() {
+        Some(binary) if !sources.is_empty() => tools::clang_query::suppressed(
+            &binary,
+            &sources,
+            compile_db.as_ref(),
+            &[format!("-std={}", cli.std)],
+            &analysis_root,
+            cli.jobs,
+        ),
+        _ => Default::default(),
+    };
+    let before_suppression = raw.len();
+    let raw: Vec<_> = raw
+        .into_iter()
+        .filter(|f| {
+            !suppressed
+                .get(&(f.file.clone(), f.line))
+                .is_some_and(|targets| targets.contains(&f.native_id.as_str()))
+        })
+        .collect();
+    let suppressed_count = before_suppression - raw.len();
+
     // Generated code is demoted before merging, so a generated finding cannot
     // raise a real one's confidence through corroboration either.
     let mut generated_cache: HashMap<PathBuf, bool> = HashMap::new();
@@ -463,6 +487,7 @@ fn main() -> Result<()> {
         external_findings: external,
         call_graph: &call_graph,
         dropped_flags: compile_db.as_ref().map(|d| d.dropped_flags()).unwrap_or(&[]),
+        suppressed: suppressed_count,
     };
 
     if cli.json {

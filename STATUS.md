@@ -122,6 +122,57 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## Suppressions: keeping an engine's judgement, removing one wrong case (2026-08-21)
+
+`bugprone-implicit-widening-of-multiplication-result` reported
+`const std::ptrdiff_t defaultL1CacheSize = 32*1024;` as a potential overflow.
+Both operands are literals, the product is 32768, and nothing about it depends
+on input. Five such findings survived into Eigen's medium tier.
+
+**Replacing the check was measured and rejected.** A `kordon-` matcher covering
+the same ground -- an integer multiplication in a widening or pointer-offset
+context, minus literal-times-literal -- scored exactly right on a probe (three
+genuine cases, both false positives excluded) and then produced **326 positions
+on the reference corpus against clang-tidy's 90, moving 0.3% between the broken
+and corrected trees.** Trading 3 false positives for 236 inert findings is a
+worse report.
+
+The reason is worth stating: clang-tidy is right about the hard part. Deciding
+*which* multiplications are implicitly widened is fiddly type reasoning, and it
+does that correctly. It is wrong about exactly one narrow shape.
+
+So Kordon gained a **suppression**: a matcher that removes another engine's
+finding at a position, declared with the reason and counted in the report.
+
+```
+target:  bugprone-implicit-widening-of-multiplication-result
+shape:   binaryOperator("*", hasLHS(integerLiteral), hasRHS(integerLiteral))
+reason:  the product is fixed at compile time; a constant that genuinely
+         overflows is reported by the compiler as -Winteger-overflow, which
+         Kordon already ingests
+```
+
+That last clause is what makes it safe. `const long long x = 100000 * 100000;`
+really does overflow, and clang diagnoses it independently -- verified -- so
+suppressing the constant case loses nothing.
+
+On Eigen's blas module: **medium 5 -> 2, nine raw findings suppressed**, and the
+two survivors are genuine -- `(*n-1)*(*incx)` in `level1_impl.h`, runtime times
+runtime used as a pointer offset. The reference corpus is unchanged.
+
+### Two traps this hit on the way
+
+`isIntegerConstantExpr()` would have been the natural matcher and **is not
+registered in clang-query**: using it fails the whole matcher to parse and
+returns zero, which reads as "nothing to suppress". There is now a test
+asserting no suppression uses it.
+
+And the suppression silently did nothing at first because its positions were
+not canonicalized. clang-query reports the path as the compile database spells
+it -- `blas/../Eigen/src/...` -- while findings are canonicalized on the way
+into the report, so the keys never matched. Same class of bug as the cJSON
+duplicate-path defect, in the opposite direction.
+
 ## Eigen blas: machine-generated code is a false-positive factory (2026-08-21)
 
 64 TUs, 2 minutes, 816 in-scope findings -- and **24 of the 24 high-confidence

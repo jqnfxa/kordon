@@ -19,6 +19,7 @@
 //! earn medium confidence. Each check's confidence comes from the mapping
 //! table, so this is a decision recorded per check rather than a blanket rule.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1246,6 +1247,113 @@ pub struct RawMatch {
     pub column: u32,
 }
 
+
+/// A shape that makes another engine's finding wrong.
+///
+/// Kordon's usual answer to a false positive is a better check of its own, but
+/// that is the wrong tool when the other engine is right about the hard part
+/// and wrong about one narrow case. `bugprone-implicit-widening-of-multiplication-result`
+/// correctly identifies which multiplications are widened -- genuinely fiddly
+/// type reasoning -- and then reports `32*1024` alongside `n*stride`.
+///
+/// Replacing it was measured and rejected: a matcher covering the same ground
+/// produced 326 positions on the reference corpus against clang-tidy's 90, and
+/// moved 0.3% between the broken and corrected trees. Suppressing one shape
+/// keeps the engine's judgement and removes only the case it gets wrong.
+pub struct Suppression {
+    /// The native check id whose findings this removes.
+    pub target: &'static str,
+    /// Why the target is wrong here. Shown in the report, because a silently
+    /// removed finding is exactly what this project refuses to do elsewhere.
+    pub reason: &'static str,
+    pub matcher: &'static str,
+}
+
+pub const SUPPRESSIONS: &[Suppression] = &[Suppression {
+    target: "bugprone-implicit-widening-of-multiplication-result",
+    reason: "both operands are literals, so the product is fixed at compile time and cannot \
+depend on input; a constant that genuinely overflows is reported by the compiler itself as \
+-Winteger-overflow, which Kordon already ingests",
+    // Deliberately not `isIntegerConstantExpr()`: that matcher is not
+    // registered in clang-query, and an unregistered name makes the whole
+    // matcher fail to parse and return zero -- indistinguishable from a clean
+    // result.
+    matcher: "binaryOperator(hasOperatorName(\"*\"), \
+unless(isExpansionInSystemHeader()), \
+hasLHS(ignoringParenImpCasts(integerLiteral())), \
+hasRHS(ignoringParenImpCasts(integerLiteral()))).bind(\"root\")",
+}];
+
+/// Positions where a suppression applies, as `(file, line) -> target check`.
+pub fn suppressed(
+    binary: &str,
+    sources: &[PathBuf],
+    compile_db: Option<&CompileDb>,
+    extra_args: &[String],
+    root: &Path,
+    jobs: usize,
+) -> HashMap<(PathBuf, u32), Vec<&'static str>> {
+    let mut out: HashMap<(PathBuf, u32), Vec<&'static str>> = HashMap::new();
+    for sup in SUPPRESSIONS {
+        let chunks: Vec<Vec<PathBuf>> = sources
+            .chunks(sources.len().div_ceil(jobs.max(1)).max(1))
+            .map(|c| c.to_vec())
+            .collect();
+        let found: Vec<RawMatch> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunks
+                .iter()
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        let mut acc = Vec::new();
+                        for source in chunk {
+                            acc.extend(run_matcher(binary, sup.matcher, source, compile_db,
+                                                   extra_args, root));
+                        }
+                        acc
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
+        });
+        for m in found {
+            // Canonicalized to match the findings, which are canonicalized on
+            // the way into the report. clang-query reports the path as the
+            // compile database spells it -- `blas/../Eigen/src/...` here --
+            // and an uncanonicalized key silently matches nothing.
+            let file = std::fs::canonicalize(&m.file).unwrap_or(m.file);
+            out.entry((file, m.line)).or_default().push(sup.target);
+        }
+    }
+    out
+}
+
+/// Run a bare matcher, without the QueryCheck machinery around it.
+fn run_matcher(
+    binary: &str,
+    matcher: &str,
+    source: &Path,
+    compile_db: Option<&CompileDb>,
+    extra_args: &[String],
+    root: &Path,
+) -> Vec<RawMatch> {
+    let mut cmd = Command::new(binary);
+    cmd.arg("-c").arg(format!("match {matcher}"));
+    if let Some(db) = compile_db {
+        cmd.arg("-p").arg(db.path());
+    }
+    cmd.arg(source);
+    if compile_db.is_none() {
+        cmd.arg("--");
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+    }
+    let Ok(output) = cmd.output() else {
+        return Vec::new();
+    };
+    parse_matches(&String::from_utf8_lossy(&output.stdout), "suppression", root)
+}
+
 fn run_one(
     binary: &str,
     check: &QueryCheck,
@@ -1378,6 +1486,30 @@ Match #2:\n\n\
         let m = UNSIGNED_SUBTRACTION.matcher();
         assert!(m.contains("hasLoopInit"));
         assert!(m.contains("hasInitializer(ignoringParenImpCasts(integerLiteral"));
+    }
+
+    #[test]
+    fn suppressions_are_well_formed_and_target_a_real_check() {
+        for sup in SUPPRESSIONS {
+            // An unbalanced matcher makes clang-query return zero rather than
+            // an error, which reads as "nothing to suppress" and silently
+            // leaves the false positives in place.
+            assert_eq!(
+                sup.matcher.matches('(').count(),
+                sup.matcher.matches(')').count(),
+                "unbalanced suppression matcher for {}",
+                sup.target
+            );
+            // The runner keys on the "root" binding, like every other matcher
+            // here; without it nothing is ever collected.
+            assert!(sup.matcher.contains("bind(\"root\")"), "{} has no root bind", sup.target);
+            // `isIntegerConstantExpr` is not registered in clang-query. Using
+            // it fails the whole matcher to parse and returns zero, which is
+            // indistinguishable from a clean result -- the exact trap this
+            // suppression was written around.
+            assert!(!sup.matcher.contains("isIntegerConstantExpr"));
+            assert!(!sup.reason.is_empty(), "a suppression must say why");
+        }
     }
 
     #[test]

@@ -34,6 +34,9 @@ pub struct Report<'a> {
     pub external_findings: usize,
     /// Cross-TU dependencies observed during the CTU pass. Empty without --ctu.
     pub call_graph: &'a CallGraph,
+    /// Findings removed by a suppression: another engine was right about the
+    /// hard part and wrong about one narrow shape. Counted, never silent.
+    pub suppressed: usize,
     /// GCC-only flags removed from the compile database so the clang-based
     /// engines could read it. Reported because the analysis then ran on
     /// slightly different flags than the build did.
@@ -255,6 +258,13 @@ impl<'a> Report<'a> {
         }
 
         out.push_str(&format!("\n  {} file(s) analyzed\n", self.analyzed_files));
+        if self.suppressed > 0 {
+            out.push_str(&format!(
+                "  {} finding(s) suppressed — another engine reported a shape it is\n\
+             \x20 measurably wrong about; see SUPPRESSIONS in src/tools/clang_query.rs\n",
+                self.suppressed
+            ));
+        }
         if !self.dropped_flags.is_empty() {
             out.push_str(&format!(
                 "  {} GCC-only flag(s) removed from the compile database so the clang\n\
