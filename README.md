@@ -37,6 +37,12 @@ kordon path/to/src --dynamic --run "ctest --output-on-failure"
 kordon path/to/src --dynamic --profiles asan,valgrind,msan
 ```
 
+CMake and Make projects both work. For Make, the tree is copied out of place
+and the compiler is *wrapped* rather than the flags overridden — passing
+`CFLAGS=` on the command line would discard the Makefile's own `-std` and
+`-I`, so the wrapper appends instead. A build system that ignores the override
+entirely is caught and reported as a failure, never as a clean result.
+
 It only sees what the command executes: whatever line coverage `--run` reaches
 is the hard ceiling, and silence means "not exercised" at least as often as it
 means "correct". Every run has a deadline — a sanitizer that hangs is not

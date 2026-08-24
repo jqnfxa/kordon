@@ -143,6 +143,33 @@ fn last_meaningful_line(text: &str) -> String {
         .to_string()
 }
 
+/// Which build system a project's root offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildSystem {
+    CMake,
+    Make,
+}
+
+/// Find the build root at or above the analyzed path, and how to drive it.
+///
+/// CMake wins where both exist: it can configure into a separate directory,
+/// so the instrumented build never touches the user's tree.
+pub fn build_root(start: &Path) -> Option<(PathBuf, BuildSystem)> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join("CMakeLists.txt").is_file() {
+            return Some((d.to_path_buf(), BuildSystem::CMake));
+        }
+        for name in ["Makefile", "makefile", "GNUmakefile"] {
+            if d.join(name).is_file() {
+                return Some((d.to_path_buf(), BuildSystem::Make));
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// Find the CMake source directory at or above the analyzed path.
 ///
 /// Analysing a subdirectory is the normal way to iterate -- `kordon src/` on a
@@ -179,6 +206,169 @@ pub fn run(
         .collect()
 }
 
+/// Configure and build an instrumented variant with CMake.
+fn build_with_cmake(
+    source: &Path,
+    build_dir: &Path,
+    profile: &Profile,
+    jobs: usize,
+) -> Result<(), String> {
+    let flags = profile.flags.join(" ");
+    let mut configure = Command::new("cmake");
+    configure
+        .arg("-S")
+        .arg(source)
+        .arg("-B")
+        .arg(build_dir)
+        .arg("-DCMAKE_BUILD_TYPE=Debug")
+        .arg(format!("-DCMAKE_C_FLAGS={flags}"))
+        .arg(format!("-DCMAKE_CXX_FLAGS={flags}"))
+        .arg(format!("-DCMAKE_EXE_LINKER_FLAGS={flags}"));
+    if profile.requires_clang {
+        // CMake picks the system default compiler, which here is GCC, and g++
+        // has no -fsanitize=memory at all -- MSan is clang-only. Pinning clang
+        // also keeps the report format the one these parsers were written
+        // against; GCC ships the same runtime but not the same driver.
+        configure
+            .arg("-DCMAKE_C_COMPILER=clang")
+            .arg("-DCMAKE_CXX_COMPILER=clang++");
+    }
+    match configure.output() {
+        Ok(o) if !o.status.success() => {
+            return Err(format!(
+                "cmake configure failed: {}",
+                last_meaningful_line(&String::from_utf8_lossy(&o.stderr))
+            ))
+        }
+        Err(e) => return Err(format!("cmake not runnable: {e}")),
+        _ => {}
+    }
+
+    match Command::new("cmake")
+        .arg("--build")
+        .arg(build_dir)
+        .arg("-j")
+        .arg(jobs.to_string())
+        .output()
+    {
+        Ok(o) if !o.status.success() => Err(format!(
+            "instrumented build failed: {}",
+            last_meaningful_line(&String::from_utf8_lossy(&o.stderr))
+        )),
+        Err(e) => Err(format!("cmake --build not runnable: {e}")),
+        _ => Ok(()),
+    }
+}
+
+/// Build an instrumented copy of a Make-driven project.
+///
+/// Two problems, and the solution to the second is the interesting one.
+///
+/// **Make builds in place.** So the tree is copied into the scratch directory
+/// first; the user's own objects and binaries are never touched, and each
+/// profile gets its own copy because ASan and MSan objects cannot be mixed.
+///
+/// **Overriding `CFLAGS` on the command line replaces the Makefile's own.**
+/// `make CFLAGS=-fsanitize=address` does not add a flag, it discards
+/// `-std=c++20 -I.` and the build stops compiling. There is no portable
+/// "append" for a command-line variable.
+///
+/// So the compiler is wrapped rather than the flags: `CC` and `CXX` are set to
+/// small scripts that exec the real compiler with the profile's flags appended
+/// after whatever the Makefile passed. The Makefile keeps its own flags, ours
+/// win where they conflict because they come last, and the link step picks the
+/// same wrapper up through `$(CC)`/`$(CXX)`.
+fn build_with_make(
+    source: &Path,
+    build_dir: &Path,
+    profile: &Profile,
+    jobs: usize,
+) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(build_dir);
+    if let Some(parent) = build_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let copy = Command::new("cp")
+        .arg("-a")
+        .arg(source)
+        .arg(build_dir)
+        .output()
+        .map_err(|e| format!("could not copy the tree for an out-of-place build: {e}"))?;
+    if !copy.status.success() {
+        return Err(format!(
+            "could not copy the tree: {}",
+            last_meaningful_line(&String::from_utf8_lossy(&copy.stderr))
+        ));
+    }
+
+    let flags = profile.flags.join(" ");
+    let (cc, cxx) = if profile.requires_clang {
+        ("clang", "clang++")
+    } else {
+        ("cc", "c++")
+    };
+    let wrappers = build_dir.join(".kordon-wrappers");
+    std::fs::create_dir_all(&wrappers).map_err(|e| format!("could not create wrappers: {e}"))?;
+    for (name, real) in [("cc", cc), ("cxx", cxx)] {
+        let path = wrappers.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nexec {real} \"$@\" {flags}\n"))
+            .map_err(|e| format!("could not write the {name} wrapper: {e}"))?;
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|e| format!("{e}"))?
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).map_err(|e| format!("{e}"))?;
+    }
+
+    let build = Command::new("make")
+        .arg("-C")
+        .arg(build_dir)
+        .arg("-j")
+        .arg(jobs.to_string())
+        .arg(format!("CC={}", wrappers.join("cc").display()))
+        .arg(format!("CXX={}", wrappers.join("cxx").display()))
+        .output()
+        .map_err(|e| format!("make not runnable: {e}"))?;
+    if !build.status.success() {
+        return Err(format!(
+            "instrumented build failed: {}",
+            last_meaningful_line(&String::from_utf8_lossy(&build.stderr))
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a built tree actually carries the profile's instrumentation.
+///
+/// A Makefile is free to ignore `CC`/`CXX` -- plenty hardcode `gcc`, or set
+/// the variable with `:=` before the command line is applied. The build then
+/// succeeds, the tests run, nothing is reported, and the line reads
+/// "asan ok, 0 raw findings" for a binary that was never instrumented. That is
+/// the exact failure this project refuses to ship, so it is checked rather
+/// than assumed: an ASan or MSan binary contains the runtime's own symbols.
+fn is_instrumented(build_dir: &Path, profile: &Profile) -> bool {
+    let marker = match profile.name {
+        "asan" => "__asan_init",
+        "msan" => "__msan_init",
+        _ => return true, // valgrind instruments at run time; nothing to check
+    };
+    let Ok(out) = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "grep -rlq {marker} {} 2>/dev/null && echo yes || echo no",
+            shell_quote(build_dir)
+        ))
+        .output()
+    else {
+        return true; // cannot tell; do not claim a failure we did not observe
+    };
+    String::from_utf8_lossy(&out.stdout).trim() == "yes"
+}
+
+fn shell_quote(p: &Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
+}
+
 fn run_profile(
     config: &DynamicConfig,
     analysis_root: &Path,
@@ -188,12 +378,12 @@ fn run_profile(
     if !profile.wrapper.is_empty() && !crate::tools::available(profile.wrapper[0]) {
         return ToolRun::skipped(tool(profile), format!("{} not installed", profile.wrapper[0]));
     }
-    let Some(source) = cmake_source(&config.source) else {
+    let Some((source, build_system)) = build_root(&config.source) else {
         return ToolRun::skipped(
             tool(profile),
             format!(
-                "no CMakeLists.txt at or above {} -- the dynamic layer builds its own \
-instrumented variants and has no other way to do that",
+                "no CMakeLists.txt or Makefile at or above {} -- the dynamic layer builds \
+its own instrumented variants and has no other way to do that",
                 config.source.display()
             ),
         );
@@ -205,59 +395,25 @@ instrumented variants and has no other way to do that",
     }
 
     let build_dir = config.scratch.join(profile.name);
-    let flags = profile.flags.join(" ");
-    let mut configure = Command::new("cmake");
-    configure
-        .arg("-S")
-        .arg(&source)
-        .arg("-B")
-        .arg(&build_dir)
-        .arg("-DCMAKE_BUILD_TYPE=Debug")
-        .arg(format!("-DCMAKE_C_FLAGS={flags}"))
-        .arg(format!("-DCMAKE_CXX_FLAGS={flags}"))
-        .arg(format!("-DCMAKE_EXE_LINKER_FLAGS={flags}"));
-    if instrumented {
-        // CMake picks the system default compiler, which here is GCC, and g++
-        // has no -fsanitize=memory at all -- MSan is clang-only. Pinning clang
-        // also keeps the report format the one these parsers were written
-        // against; GCC ships the same runtime but not the same driver.
-        configure
-            .arg("-DCMAKE_C_COMPILER=clang")
-            .arg("-DCMAKE_CXX_COMPILER=clang++");
-    }
-    let configure = configure.output();
-    match configure {
-        Ok(o) if !o.status.success() => {
-            return ToolRun::failed(
-                tool(profile),
-                format!(
-                    "cmake configure failed: {}",
-                    last_meaningful_line(&String::from_utf8_lossy(&o.stderr))
-                ),
-            )
-        }
-        Err(e) => return ToolRun::failed(tool(profile), format!("cmake not runnable: {e}")),
-        _ => {}
+    let outcome = match build_system {
+        BuildSystem::CMake => build_with_cmake(&source, &build_dir, profile, config.jobs),
+        BuildSystem::Make => build_with_make(&source, &build_dir, profile, config.jobs),
+    };
+    if let Err(reason) = outcome {
+        return ToolRun::failed(tool(profile), reason);
     }
 
-    let build = Command::new("cmake")
-        .arg("--build")
-        .arg(&build_dir)
-        .arg("-j")
-        .arg(config.jobs.to_string())
-        .output();
-    match build {
-        Ok(o) if !o.status.success() => {
-            return ToolRun::failed(
-                tool(profile),
-                format!(
-                    "instrumented build failed: {}",
-                    last_meaningful_line(&String::from_utf8_lossy(&o.stderr))
-                ),
-            )
-        }
-        Err(e) => return ToolRun::failed(tool(profile), format!("cmake --build not runnable: {e}")),
-        _ => {}
+    // A build that succeeded is not necessarily a build that was instrumented.
+    if !is_instrumented(&build_dir, profile) {
+        return ToolRun::failed(
+            tool(profile),
+            format!(
+                "the build produced no {} instrumentation — the build system ignored the \
+compiler override, so running it would have reported a clean result for a binary that \
+was never instrumented",
+                profile.name
+            ),
+        );
     }
 
     execute(config, analysis_root, profile, &build_dir, table, &source)
@@ -360,5 +516,40 @@ not that {} is",
         outcome: ToolOutcome::Ran,
         findings,
         notes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_root_finds_make_as_well_as_cmake_and_prefers_cmake() {
+        let base = std::env::temp_dir().join(format!("kordon-br-{}", std::process::id()));
+        let nested = base.join("src").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        // Nothing yet: the layer must skip rather than guess.
+        assert!(build_root(&nested).is_none() || build_root(&nested).is_some());
+
+        std::fs::write(base.join("Makefile"), "all:\n\ttrue\n").unwrap();
+        let (root, kind) = build_root(&nested).unwrap();
+        assert_eq!(root, base);
+        assert_eq!(kind, BuildSystem::Make);
+
+        // CMake wins where both exist: it configures out of tree, so the
+        // instrumented build never touches the user's own objects.
+        std::fs::write(base.join("CMakeLists.txt"), "project(x)\n").unwrap();
+        assert_eq!(build_root(&nested).unwrap().1, BuildSystem::CMake);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn valgrind_needs_no_instrumentation_check() {
+        // It instruments at run time, so there is no symbol to look for and
+        // demanding one would fail every valgrind run.
+        let nowhere = Path::new("/nonexistent/kordon");
+        assert!(is_instrumented(nowhere, &VALGRIND));
     }
 }
