@@ -122,6 +122,43 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## AvlTree: a validation datapoint for transfer-to-non-owner (2026-08-21)
+
+2500-line header-heavy C++ template project. 25 in-scope findings, 2 high and 1
+medium, all three in test code rather than the library.
+
+The useful result is what stayed quiet. `cppcoreguidelines-owning-memory` fires
+**13 times** on `tree.insert(new AvlTreeNode<int>(value))` -- syntactically
+identical to the GA_Practice defect that motivated
+`kordon-transfer-to-non-owner`. Our check fires **zero** times, correctly:
+`AvlTreeBase` declares `~AvlTreeBase()` and releases its nodes through
+`safe_delete`, so there is a release path and no claim to make. That is the
+distinction the check was built on, holding up on code it was not tuned against.
+
+The three findings triaged:
+
+- `TestAvlTree.cpp:69` `'tree' used after it was moved` -- **intentional**. The
+  test asserts the moved-from tree has a null root, which is a legitimate use
+  of a moved-from object whose post-move state is specified.
+- `TestAvlTree.cpp:89` and `:113` null-pointer calls -- mild and real. The test
+  dereferences `tree.root_` without checking it, so a regression in `insert`
+  would segfault the suite instead of failing a test cleanly.
+
+### The compile failure was the real find
+
+Kordon reported "1 of 5 translation unit(s) FAILED TO COMPILE and were not
+analyzed -- findings for them are absent, not clean", and that was accurate:
+`AvlTreeImplementation.hpp` uses `std::exchange` four times and never includes
+`<utility>`. The four test units compile only because gtest pulls it in
+transitively; `src/core/main.cpp` does not, and fails.
+
+Worth recording against the **pkta open question** ("51 files failing in batch
+that compile cleanly individually"). The individual check that produced that
+observation may have been run the way this one initially was -- with
+`--checks='-*'`, which makes clang-tidy exit with "no checks enabled" before
+compiling anything and report zero errors. A file that never gets parsed looks
+exactly like a file that parses cleanly.
+
 ## A confirmed crash found on CompensationSum (2026-08-21)
 
 23-file mixed C/C++ numerical project. Kordon produced 64 in-scope findings, 62
