@@ -18,7 +18,7 @@
 //! work, and until then the report must not imply cross-TU coverage.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -123,6 +123,7 @@ pub fn run(
     checks: &str,
     jobs: usize,
     table: &CweTable,
+    timeout_secs: u64,
 ) -> ToolRun {
     if sources.is_empty() {
         return ToolRun {
@@ -142,7 +143,7 @@ pub fn run(
             .enumerate()
             .map(|(index, files)| {
                 scope.spawn(move || {
-                    run_shard(binary, files, compile_db, extra_args, checks, index)
+                    run_shard(binary, files, compile_db, extra_args, checks, index, timeout_secs)
                 })
             })
             .collect();
@@ -156,6 +157,7 @@ pub fn run(
     let mut yaml_chunks = Vec::new();
     let mut spawn_errors = Vec::new();
     let mut failed_units = 0usize;
+    let mut abandoned = 0usize;
 
     for result in results {
         match result {
@@ -165,12 +167,24 @@ pub fn run(
                     yaml_chunks.push(text);
                 }
             }
+            ShardResult::TimedOut(n) => {
+                abandoned += n;
+            }
             ShardResult::SpawnFailed(reason) => spawn_errors.push(reason),
         }
     }
 
     // Every shard failing to spawn means the engine never ran. Reporting that
     // as "ran, found nothing" would be a lie.
+    if abandoned > 0 {
+        // Not a clean result for those units: clang-tidy writes its fixes file
+        // only at the end, so a killed shard leaves nothing behind at all.
+        spawn_errors.push(format!(
+            "{abandoned} translation unit(s) exceeded the per-invocation deadline and were \
+abandoned — their findings are absent, not clean"
+        ));
+    }
+
     if !spawn_errors.is_empty() && yaml_chunks.is_empty() && failed_units == 0 {
         return ToolRun::failed(tool(), spawn_errors.remove(0));
     }
@@ -221,6 +235,10 @@ enum ShardResult {
         failed: usize,
     },
     SpawnFailed(String),
+    /// The shard exceeded its deadline and was killed. Its findings are lost
+    /// -- clang-tidy writes its fixes file at the end, so a killed run leaves
+    /// nothing behind. Reported with the count, never silently dropped.
+    TimedOut(usize),
 }
 
 fn run_shard(
@@ -230,10 +248,11 @@ fn run_shard(
     extra_args: &[String],
     checks: &str,
     index: usize,
+    timeout_secs: u64,
 ) -> ShardResult {
     let fixes_path = shard_fixes_path(index);
 
-    let mut cmd = Command::new(binary);
+    let mut cmd = super::with_timeout(binary, timeout_secs);
     cmd.arg(format!("-checks={checks}"))
         .arg(format!("--export-fixes={}", fixes_path.display()))
         // Without this, findings in the project's own headers are dropped.
@@ -259,6 +278,9 @@ fn run_shard(
         Ok(output) => output,
         Err(err) => return ShardResult::SpawnFailed(format!("could not run `{binary}`: {err}")),
     };
+    if output.status.code() == Some(super::TIMED_OUT) {
+        return ShardResult::TimedOut(files.len());
+    }
 
     // clang-tidy prints "Error while processing <file>." once per *compile
     // command*, not per file. A project that builds each source twice -- a

@@ -71,3 +71,27 @@ pub fn available(binary: &str) -> bool {
         .status()
         .is_ok()
 }
+
+/// Wrap a command so a single translation unit cannot hang the whole run.
+///
+/// The dynamic layer learned this from MSan; the static layer needed it more,
+/// and Eigen showed why. One template-heavy translation unit there compiles in
+/// 11 seconds and takes **over nine minutes** under clang-tidy with Kordon's
+/// check set -- and nothing was stopping it taking nine hours. With 1310 units
+/// in that project, an unbounded per-unit cost is not a slow run, it is a run
+/// that never returns, with no output and no way to tell which unit was
+/// responsible.
+///
+/// Implemented by prefixing `timeout`, the same way the dynamic layer does it,
+/// rather than by hand-rolling a wait: the child is a compiler frontend that
+/// may spawn its own children, and only a process-group kill reliably stops it.
+///
+/// `timeout` exits 124 when it fires, which callers check to distinguish "this
+/// unit was abandoned" from "this unit was clean".
+pub const TIMED_OUT: i32 = 124;
+
+pub fn with_timeout(binary: &str, secs: u64) -> std::process::Command {
+    let mut cmd = std::process::Command::new("timeout");
+    cmd.arg(secs.to_string()).arg(binary);
+    cmd
+}

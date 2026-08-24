@@ -139,6 +139,13 @@ struct Cli {
     #[arg(long, value_name = "LIST", default_value = "asan,valgrind")]
     profiles: String,
 
+    /// Seconds any single static-analysis invocation may take before it is
+    /// abandoned. One template-heavy Eigen translation unit compiles in 11
+    /// seconds and exceeds nine minutes under the default check set, and
+    /// nothing was stopping it taking nine hours.
+    #[arg(long, default_value_t = 600)]
+    tool_timeout: u64,
+
     /// Keep the instrumented build trees instead of deleting them. One full
     /// build per profile, so this is the largest thing a run leaves behind --
     /// worth keeping only to re-run a failing case by hand.
@@ -242,6 +249,7 @@ fn main() -> Result<()> {
             tools::clang_tidy::DEFAULT_CHECKS,
             cli.jobs,
             &table,
+            cli.tool_timeout,
         ));
     }
 

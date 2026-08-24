@@ -122,6 +122,57 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## Eigen: the static layer had no deadline (2026-08-21)
+
+637 headers, 1310 translation units, and the hardest shape Kordon has been
+pointed at -- header-only, heavily templated, where every TU instantiates an
+enormous tree.
+
+**The finding is a Kordon defect, not an Eigen one.** Measured on one test TU:
+
+| | |
+|---|---|
+| plain `clang++ -c` | **11.5 s** |
+| `clang-tidy` with Kordon's check set | **exceeded 9 minutes**, killed |
+
+And nothing was stopping it taking nine hours. The dynamic layer has had a
+deadline since MSan hung; the static layer -- the default path, the one that
+always runs -- had none at all. On a project this size an unbounded per-unit
+cost is not a slow run, it is a run that never returns, produces no output, and
+gives no way to tell which unit was responsible.
+
+`--tool-timeout` now bounds every clang-tidy invocation, defaulting to 600s.
+A killed shard is reported, never silently dropped: clang-tidy writes its fixes
+file only at the end, so a timeout loses that shard's findings entirely and the
+report has to say so.
+
+### The template explosion is real and mostly absorbed
+
+| module | TUs | raw clang-tidy | in-scope | high | medium |
+|---|---|---|---|---|---|
+| demos | 6 | 5780 | 474 | 3 | 5 |
+| bench | 3 | 7256 | 1537 | 3 | 4 |
+
+Three translation units producing 7256 raw findings is what "header-only and
+templated" does. Scoping and tiering absorb almost all of it -- 7 actionable
+out of 7256 -- which is the tiering working as designed rather than a problem.
+
+### Triage of what surfaced
+
+- `GeneralBlockPanelKernel.h:29-31`, `bugprone-implicit-widening-of-multiplication-result`:
+  **false positive**. The expression is `const std::ptrdiff_t defaultL1CacheSize = 32*1024;`
+  -- compile-time constants nowhere near overflowing `int`. The check is
+  syntactic and does not consider operand values.
+- `BiCGSTAB.h:175`, `ConjugateGradient.h:178`, `SuperLUSupport.h:119`,
+  `optin.cplusplus.UninitializedObject`: 4, 5 and 8 uninitialised fields at
+  constructor exit. Almost certainly deliberate -- Eigen's solvers defer
+  initialisation to `compute()` -- but it is exactly the CWE-665 shape
+  CLAUDE.md targets, and a solver used before `compute()` reads them.
+- `MatrixMarketIterator.h:219`, **our** `kordon-extent-underflow`: correct about
+  the underflow, mild in consequence. `filename.substr(0, filename.length()-4)`
+  underflows for names shorter than four characters; `substr` clamps the count,
+  so the result is silently the whole string rather than a crash.
+
 ## The reachability gap is not closable by AST matching — measured (2026-08-21)
 
 Prompted by the `parser.cpp:52` miss, an "unguarded container access" check was
