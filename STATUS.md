@@ -122,6 +122,46 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## A confirmed crash found on CompensationSum (2026-08-21)
+
+23-file mixed C/C++ numerical project. Kordon produced 64 in-scope findings, 62
+low and **2 medium** -- and both medium findings are the same real defect, in
+`exact_sum.c:32` and `exact_dot.c:37`:
+
+```c
+int max_exp = -1074;                 /* sentinels: lowest/highest double exponent */
+int min_exp = 1023;
+for (size_t i = 0; i < size; ++i) {
+    if (array[i] == 0.0) continue;   /* zeros never update the sentinels */
+    ...
+}
+mp_bitcnt_t range = (mp_bitcnt_t)(max_exp - min_exp + 53);
+```
+
+An array of all zeros passes the `size == 0 && array == NULL` guard, skips
+every iteration, and leaves the sentinels untouched. The arithmetic then runs
+in `int`: `-1074 - 1023 + 53 = -2044`, cast to a 64-bit unsigned bit count as
+**18446744073709549572**, and handed to `mpf_init2`. The `if (precision <
+65536)` floor does not catch it -- the value is enormous, not small.
+
+Reproduced, not inferred:
+
+```
+$ ./zsum          # exact_sum(double[4]{0,0,0,0}, 4)
+GNU MP: Cannot allocate memory (size=2305843009213693736)
+Aborted (core dumped)
+```
+
+2.3 exabytes. `exact_dot` is easier to trigger still, since its skip condition
+is `x[i] == 0.0 || y[i] == 0.0` -- either vector being all zeros suffices.
+
+Found by `bugprone-misplaced-widening-cast`, mapped to CWE-190. Worth noting
+which checks did *not* find it: `kordon-unsigned-subtraction` does not fire
+because the subtraction is on `int`, not an unsigned type, so the underflow
+happens at the cast rather than in the arithmetic. The mapping table earning
+its keep -- a clang-tidy check nobody would call a memory-safety check
+producing the only real defect on the project.
+
 ## Two CTU bugs found by running on open source (2026-08-21)
 
 Running Kordon on cJSON (23 TUs) and tinyxml2 surfaced two defects in Kordon
