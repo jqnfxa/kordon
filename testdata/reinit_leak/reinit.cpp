@@ -23,6 +23,7 @@ public:
     void init_leaking(std::size_t n);
     void init_released(std::size_t n);
     void init_via_helper(std::size_t n);
+    void init_once(std::size_t n);
     void clearBuffer();
 
 private:
@@ -63,6 +64,20 @@ void Buffer::init_via_helper(std::size_t n)
     clearBuffer();
     m_data = new double[n];
     m_size = n;
+}
+
+// Lazy initialisation: the assignment is guarded by a test on the same member,
+// so it only ever runs while m_data holds nothing. Calling this twice allocates
+// once. Reported until the check learned to read the guard -- a Qt main window
+// that opens its 25 tool windows this way produced 25 false positives in one
+// file, which was every high-confidence finding it had.
+void Buffer::init_once(std::size_t n)
+{
+    if (m_data == nullptr)
+    {
+        m_data = new double[n];
+        m_size = n;
+    }
 }
 
 }  // namespace kordon_probe

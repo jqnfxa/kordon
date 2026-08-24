@@ -899,12 +899,25 @@ callExpr(callee(functionDecl(hasName(\"free\"))), hasAnyArgument(ignoringParenIm
 cxxMemberCallExpr(callee(cxxMethodDecl(\
 matchesName(\"(clear|free|release|reset|destroy|dealloc|cleanup|delete)\")))))"
     );
+    // Lazy initialisation is not a reinitialisation. An assignment guarded by
+    // an `if` that tests the same member -- `if (!m_w) m_w = new W;` -- runs
+    // only while the member holds nothing, so calling the method twice cannot
+    // leak. Measured on a Qt main window that opens 25 tool windows this way:
+    // 25 of 25 high-confidence findings in that file were this idiom, and the
+    // check reported every one of them.
+    //
+    // Testing the member at all is the signal, not the specific comparison.
+    // The idiom is written `if (!m)`, `if (m == nullptr)` and `if (m == NULL)`
+    // interchangeably, and enumerating those forms would only reintroduce the
+    // gap for the next spelling.
+    let guarded = format!("hasAncestor(ifStmt(hasCondition(anyOf({same}, hasDescendant({same})))))");
     format!(
         "binaryOperator(hasOperatorName(\"=\"), \
 unless(isExpansionInSystemHeader()), \
 unless(isInTemplateInstantiation()), \
 hasLHS(ignoringParenImpCasts({field})), \
 hasRHS(ignoringParenImpCasts(cxxNewExpr())), \
+unless({guarded}), \
 hasAncestor(cxxMethodDecl(unless(cxxConstructorDecl()), unless(hasDescendant({released})))))"
     )
 }
@@ -1648,6 +1661,11 @@ Match #2:\n\n\
         // `allOf` around a node matcher plus hasAncestor silently matches
         // nothing -- it cost a full tree scan to notice. Keep them inline.
         assert!(!m.contains("allOf("));
+        // An assignment guarded by a test on the same member is lazy
+        // initialisation and cannot leak. Without this, a Qt main window that
+        // opens 25 tool windows on demand produced 25 false positives -- every
+        // high-confidence finding in the file.
+        assert!(m.contains("unless(hasAncestor(ifStmt(hasCondition("));
     }
 
     #[test]
