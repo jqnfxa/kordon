@@ -12,6 +12,7 @@
 //! and silence from it means "not exercised" at least as often as it means
 //! "correct". The report says so.
 
+pub mod faultinject;
 pub mod report;
 pub mod sanitizer;
 pub mod valgrind;
@@ -117,7 +118,36 @@ pub const VALGRIND: Profile = Profile {
     about: "an independent engine, no rebuild required",
 };
 
-pub const PROFILES: &[&Profile] = &[&ASAN, &MSAN, &VALGRIND];
+
+/// Reach error paths by making allocations fail, one at a time.
+///
+/// Runs under valgrind rather than ASan on purpose: the defect this exists for
+/// is a function that returns without filling its caller's buffer, and the
+/// consequence is a read of uninitialised memory. ASan tracks addressability,
+/// not definedness, so it cannot see it. valgrind can.
+///
+/// A plain non-zero exit is not a finding. Most injected failures make the
+/// program stop deliberately -- GMP aborts with "Cannot allocate memory", an
+/// allocator check returns an error code -- and that is the program working.
+/// Only what valgrind reports counts, which the existing parser already
+/// enforces by reading its XML rather than the exit status.
+pub const FAULT: Profile = Profile {
+    name: "fault",
+    flags: &["-g", "-O0"],
+    env: &[],
+    wrapper: &[
+        "valgrind",
+        "--leak-check=no",
+        "--track-origins=yes",
+        "--error-exitcode=0",
+        "--xml=yes",
+        "--trace-children=yes",
+    ],
+    requires_clang: false,
+    about: "error paths, reached by failing one allocation per run",
+};
+
+pub const PROFILES: &[&Profile] = &[&ASAN, &MSAN, &VALGRIND, &FAULT];
 
 pub struct DynamicConfig {
     /// Directory holding the project's CMakeLists.txt.
@@ -127,6 +157,9 @@ pub struct DynamicConfig {
     pub scratch: PathBuf,
     pub timeout_secs: u64,
     pub jobs: usize,
+    /// How many allocation-failure points to try. Each is a separate run of
+    /// the command under valgrind, so this is the whole cost of the profile.
+    pub fault_max: usize,
 }
 
 /// The last line of a tool's stderr that actually says something.
@@ -416,7 +449,118 @@ was never instrumented",
         );
     }
 
+    if profile.name == "fault" {
+        return execute_fault(config, analysis_root, profile, &build_dir, table, &source);
+    }
     execute(config, analysis_root, profile, &build_dir, table, &source)
+}
+
+/// Run the command once per injected allocation failure.
+///
+/// Sampled evenly across the allocations a clean run makes rather than taking
+/// the first N: the interesting allocation is often late, and a program that
+/// allocates a thousand times before doing any work would otherwise have only
+/// its startup exercised.
+fn execute_fault(
+    config: &DynamicConfig,
+    analysis_root: &Path,
+    profile: &Profile,
+    build_dir: &Path,
+    table: &CweTable,
+    source: &Path,
+) -> ToolRun {
+    let so = match faultinject::build_interposer(build_dir) {
+        Ok(p) => p,
+        Err(e) => return ToolRun::failed(tool(profile), e),
+    };
+    let total = match faultinject::count_allocations(
+        &so,
+        &config.command,
+        build_dir,
+        config.timeout_secs,
+    ) {
+        Ok(n) if n > 0 => n,
+        Ok(_) => {
+            return ToolRun {
+                tool: tool(profile),
+                outcome: ToolOutcome::Ran,
+                findings: Vec::new(),
+                notes: vec![
+                    "the command made no allocations, so there is no failure to inject".into(),
+                ],
+            }
+        }
+        Err(e) => return ToolRun::failed(tool(profile), e),
+    };
+
+    let budget = config.fault_max.max(1) as u64;
+    let points: Vec<u64> = if total <= budget {
+        (1..=total).collect()
+    } else {
+        (0..budget).map(|i| 1 + i * total / budget).collect()
+    };
+
+    let xml_dir = build_dir.join("kordon-fault");
+    let mut reports = Vec::new();
+    for point in &points {
+        let _ = std::fs::remove_dir_all(&xml_dir);
+        let _ = std::fs::create_dir_all(&xml_dir);
+        let command = format!(
+            "{} --xml-file={}/vg.%p.xml {}",
+            profile.wrapper.join(" "),
+            xml_dir.display(),
+            config.command
+        );
+        let out = Command::new("timeout")
+            .arg(config.timeout_secs.to_string())
+            .arg("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(build_dir)
+            .env("LD_PRELOAD", &so)
+            .env("KORDON_FAIL_AT", point.to_string())
+            .output();
+        if out.is_err() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&xml_dir).into_iter().flatten().flatten() {
+            if let Ok(xml) = std::fs::read_to_string(entry.path()) {
+                for mut r in valgrind::parse(&xml) {
+                    // Attribution is the point: without it the reader cannot
+                    // tell which failure produced the defect, and cannot
+                    // reproduce it.
+                    r.message = format!("{} — with allocation #{point} forced to fail", r.message);
+                    reports.push(r);
+                }
+            }
+        }
+    }
+
+    let findings: Vec<_> = reports
+        .into_iter()
+        .filter_map(|r| r.into_finding(analysis_root, profile.name, table))
+        .collect();
+
+    let mut notes = vec![format!(
+        "injected {} of {total} allocation failure(s), sampled evenly",
+        points.len()
+    )];
+    if source != config.source.as_path() {
+        notes.push(format!("configured from {}", source.display()));
+    }
+    if findings.is_empty() {
+        notes.push(
+            "no defect observed on any error path reached — the paths taken handled the \
+failure, which is not a statement about the ones that were not taken"
+                .into(),
+        );
+    }
+    ToolRun {
+        tool: tool(profile),
+        outcome: ToolOutcome::Ran,
+        findings,
+        notes,
+    }
 }
 
 /// Run the command and turn whatever it printed into findings.

@@ -122,6 +122,51 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## Fault injection: shipped, and it did not find the defect that motivated it
+
+Error paths are the least-tested code in most programs and no sanitizer reaches
+them, because a sanitizer observes what a program does rather than changing
+what it is asked to do. The `fault` profile changes that: an `LD_PRELOAD`
+interposer fails the *n*th allocation and passes every other through, run once
+per *n*, under valgrind.
+
+Design points worth keeping:
+
+- **Count first, then sweep.** A clean run is measured for how many
+  allocations it makes, and the budget is sampled evenly across that range.
+  Taking the first N would exercise only startup on a program that allocates a
+  thousand times before doing any work.
+- **A non-zero exit is not a finding.** Most injected failures make the program
+  stop deliberately -- GMP aborts with "Cannot allocate memory" -- and that is
+  the program working. Only what valgrind reports counts.
+- **Attribution.** Each finding says which allocation had to fail, because
+  otherwise it cannot be reproduced.
+- **The interposer has its own bootstrap arena**, since `dlsym` allocates on
+  some libcs and would otherwise recurse into the interposer during init.
+
+### The honest result
+
+Run against `lastbit`, whose `split_vector_ozaki` returns `void` and bails out
+of a failed `malloc` without filling its caller's buffer: **a full sweep of all
+1051 allocations, six minutes, found nothing.**
+
+The mechanism is verified working -- the interposer compiles, counts 1051,
+fails on demand, and valgrind XML is produced per run. Two hypotheses for the
+miss were tested and both were wrong:
+
+- *memcheck cannot see uninitialised floating point.* It can; verified on a
+  minimal program where uninitialised `double` arithmetic reaching `printf`
+  produces reports.
+- *the error path is never reached.* It is; a size-targeted interposer fires
+  six times on the relevant allocation. But that test was itself invalid --
+  failing every `malloc(40)` also fails the caller's own buffer, which
+  `dot_ozaki` null-checks, so the buggy path is skipped.
+
+**Why the sweep misses it is not established.** Recording that as an open
+question rather than a conclusion: the feature is correct and the negative is
+real, and one of those two facts is more interesting than any story that would
+reconcile them.
+
 ## Suppressions: keeping an engine's judgement, removing one wrong case (2026-08-21)
 
 `bugprone-implicit-widening-of-multiplication-result` reported

@@ -148,6 +148,12 @@ struct Cli {
     #[arg(long, default_value_t = 600)]
     tool_timeout: u64,
 
+    /// How many allocation-failure points the `fault` profile tries. Each is a
+    /// separate run of the command under valgrind, so this is the profile's
+    /// entire cost. Sampled evenly across the allocations a clean run makes.
+    #[arg(long, default_value_t = 64)]
+    fault_max: usize,
+
     /// Keep the instrumented build trees instead of deleting them. One full
     /// build per profile, so this is the largest thing a run leaves behind --
     /// worth keeping only to re-run a failing case by hand.
@@ -378,6 +384,7 @@ fn main() -> Result<()> {
             scratch: dyn_scratch.clone(),
             timeout_secs: cli.dynamic_timeout,
             jobs: cli.jobs,
+            fault_max: cli.fault_max,
         };
         dynamic::run(&config, &canonical(&cli.path), &wanted, &table)
     } else {

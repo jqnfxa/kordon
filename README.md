@@ -31,6 +31,7 @@ The dynamic layer is separate, because it makes a different kind of claim — no
 | `asan` | out-of-bounds, use-after-free, double free, leaks, undefined behaviour | ASan+LSan+UBSan in one instrumented build |
 | `msan` | uninitialised reads — the family with the weakest static story | separate build; cannot combine with ASan |
 | `valgrind` | an independent engine with different blind spots | no instrumentation needed |
+| `fault` | error paths, by failing one allocation per run | plain build + `LD_PRELOAD` |
 
 ```bash
 kordon path/to/src --dynamic --run "ctest --output-on-failure"
