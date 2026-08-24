@@ -122,6 +122,47 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## What the CP_practice sweep did and did not teach us (2026-08-21)
+
+Worth being blunt about, because the honest answer is "less than the previous
+two projects". DMP and cJSON each broke Kordon in a new way -- a GCC toolchain,
+a build with several executables. These 17 are the same shape as each other:
+small numerical C/C++, one author, similar habits. They exercised paths that
+already worked.
+
+**Kordon did not "find all the errors" there, and that is not a claim this
+exercise can support.** The findings it made were verified; nothing was done to
+look for defects it missed. Static silence is not evidence.
+
+### Trying to falsify it produced the one real result
+
+The single high-confidence defect -- `split_vector_ozaki` returning `void` and
+bailing out of a failed `malloc` without filling its caller's buffer -- sits on
+an **allocation-failure path**. Sanitizers cannot reach it, so:
+
+- ASan + UBSan on the `--demo` path: **clean**.
+- valgrind, `--track-origins=yes`: **0 errors from 0 contexts**.
+- A `LD_PRELOAD` malloc interposer failing the *n*th allocation, swept across
+  the full range of 79 allocations the run makes, under valgrind: **no runtime
+  witness produced**.
+
+So the static layer found a defect the dynamic layer structurally cannot reach,
+and an ad-hoc fault injector could not reach either. That inverts the usual
+story, where dynamic evidence confirms what static analysis suspects, and it is
+the concrete argument for the fault-injection item CLAUDE.md lists: reaching
+error paths needs deliberate failure injection wired into the runner, not a
+better sanitizer.
+
+### A gap the sweep did surface
+
+**`--dynamic` requires CMake.** 4 of these 17 projects are Makefile-only, and
+for those the dynamic layer skips every profile. The message is accurate and
+the reason is real -- the layer builds its own instrumented variants -- but it
+means an entire common build system gets no dynamic coverage at all. Supporting
+it means either driving `make` with overridden `CC`/`CFLAGS`, which is what the
+manual runs above did successfully, or requiring the user to supply a build
+command.
+
 ## CP_practice: 17 projects, 175 TUs, 2 actionable findings (2026-08-21)
 
 A sweep across one directory of numerical/computational practice projects, all
