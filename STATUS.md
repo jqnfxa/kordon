@@ -1694,9 +1694,16 @@ measurement sections above. What remains, with the reason each is where it is:
 |---|---|
 | coverage vs everything reported | 245/379 = **65%** |
 | coverage vs defects actually fixed | 131/176 = **74%** |
-| detailed report | 383 findings / 104 acted-on = **3.7:1** |
-| detailed tier, broken -> corrected | 383 -> 209 = **-45%** |
+| detailed report | 366 findings / 104 acted-on = **3.5:1** |
+| detailed tier, broken -> corrected | 366 -> 192 = **-48%** |
 | low tier | 6724 findings / 27 acted-on |
+
+Re-verified 2026-08-21 after path canonicalization, CTU ambiguous-symbol
+dropping, generated-code demotion and the first suppression -- four changes
+that all touch dedup or tiering. Coverage is **unchanged at 65% / 74%**, and
+the detailed tier improved from 3.7:1 to 3.5:1 carrying the same 104 acted-on
+defects: 17 non-defects left, none of the real ones. Worth having checked
+rather than assumed, since two of those changes alter how findings are merged.
 
 Per CWE, against acted-on defects: 763/369/416 at 100%, 191 at 97%, 563 at 95%,
 190 at 86%, 457 and 476 at 83%, **119 at 61%**, **401 at 8%**, 415 a confirmed
