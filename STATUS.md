@@ -122,6 +122,53 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## Eigen blas: machine-generated code is a false-positive factory (2026-08-21)
+
+64 TUs, 2 minutes, 816 in-scope findings -- and **24 of the 24 high-confidence
+findings were false positives from a single structural cause.**
+
+All of them landed in `blas/f2c/drotmg.c` and `srotmg.c`, reported by
+`clang-analyzer-core.uninitialized.Assign` as reads of uninitialised values.
+The variable in question, `dh11`, is assigned at three separate places and on
+every path that reaches the use. What defeats the analyzer is how f2c
+translates Fortran's assigned-`GOTO`:
+
+```c
+    igo_fmt = fmt_120;
+    goto L70;          /* L70 assigns dh11, then dispatches back to L120 */
+L120:
+    dh11 /= gam;       /* reported uninitialised */
+```
+
+The dispatch runs through a state variable, so path-sensitive analysis cannot
+follow it and explores paths that cannot happen. There are **18 f2c-translated
+files** in that tree.
+
+### Findings in generated code are now demoted
+
+Not dropped -- the code compiles and runs, so a real defect there is still a
+defect -- but demoted out of the tiers a reader acts on, because the fix
+belongs in the generator or its input and the file is regenerated over any
+edit. Detected from the banner every generator writes (`translated by f2c`,
+`automatically generated`, `DO NOT EDIT`, and similar), read from the first 20
+lines and cached per path.
+
+Effect on the module: **high 24 -> 0, nothing lost**, 816 in-scope either way.
+Zero files in the reference corpus carry such a banner, so the measured
+baselines there are unaffected.
+
+This is the third distinct concentration problem the same shape has produced --
+`dcraw_loader.cpp` vendored into ACL, `qcustomplot.cpp` vendored into
+GA_Practice, and now f2c output in Eigen. Code the author did not write and
+cannot fix dominates the report unless something separates it out.
+
+### The remaining 5 medium findings are also false
+
+`bugprone-implicit-widening-of-multiplication-result` on
+`const std::ptrdiff_t defaultL1CacheSize = 32*1024;` -- compile-time constants
+nowhere near overflowing `int`. The check is syntactic and does not look at
+operand values. Worth knowing before trusting that check on numeric code.
+
 ## Eigen: the static layer had no deadline (2026-08-21)
 
 637 headers, 1310 translation units, and the hardest shape Kordon has been
