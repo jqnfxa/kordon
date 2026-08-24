@@ -252,7 +252,7 @@ fn main() -> Result<()> {
         runs.push(tools::clang_tidy::run(
             "clang-tidy",
             &sources,
-            compile_db.as_ref().map(|d| d.path()),
+            compile_db.as_ref(),
             &extra,
             tools::clang_tidy::DEFAULT_CHECKS,
             cli.jobs,

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Deserialize;
 
+use crate::compile_db::CompileDb;
 use crate::cwe::CweTable;
 use crate::finding::{Confidence, Event, Finding, Severity, Tool};
 use crate::offsets::OffsetResolver;
@@ -118,7 +119,7 @@ fn severity_of(level: &str) -> Severity {
 pub fn run(
     binary: &str,
     sources: &[PathBuf],
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     checks: &str,
     jobs: usize,
@@ -156,13 +157,13 @@ pub fn run(
 
     let mut yaml_chunks = Vec::new();
     let mut spawn_errors = Vec::new();
-    let mut failed_units = 0usize;
+    let mut suspect_units: Vec<PathBuf> = Vec::new();
     let mut abandoned = 0usize;
 
     for result in results {
         match result {
-            ShardResult::Ok { yaml, failed } => {
-                failed_units += failed;
+            ShardResult::Ok { yaml, suspect } => {
+                suspect_units.extend(suspect);
                 if let Some(text) = yaml {
                     yaml_chunks.push(text);
                 }
@@ -184,6 +185,11 @@ pub fn run(
 abandoned — their findings are absent, not clean"
         ));
     }
+
+    // Confirm each suspect against the compiler, so the count below is the
+    // number of units that genuinely did not compile rather than the number
+    // clang-tidy happened to process after the first one that didn't.
+    let failed_units = confirm_failures(&suspect_units, compile_db, extra_args, jobs);
 
     if !spawn_errors.is_empty() && yaml_chunks.is_empty() && failed_units == 0 {
         return ToolRun::failed(tool(), spawn_errors.remove(0));
@@ -231,8 +237,13 @@ abandoned — their findings are absent, not clean"
 enum ShardResult {
     Ok {
         yaml: Option<String>,
-        /// Translation units clang-tidy could not compile.
-        failed: usize,
+        /// Translation units clang-tidy *claimed* it could not compile.
+        ///
+        /// Only claims: clang-tidy's error counter is cumulative across the
+        /// files in one invocation, so every unit processed after the first
+        /// genuine failure is reported too. [`confirm_failures`] separates
+        /// them.
+        suspect: Vec<PathBuf>,
     },
     SpawnFailed(String),
     /// The shard exceeded its deadline and was killed. Its findings are lost
@@ -244,7 +255,7 @@ enum ShardResult {
 fn run_shard(
     binary: &str,
     files: &[PathBuf],
-    compile_db: Option<&Path>,
+    compile_db: Option<&CompileDb>,
     extra_args: &[String],
     checks: &str,
     index: usize,
@@ -260,7 +271,7 @@ fn run_shard(
         .arg("-quiet");
 
     if let Some(db) = compile_db {
-        cmd.arg("-p").arg(db);
+        cmd.arg("-p").arg(db.path());
     }
 
     for file in files {
@@ -287,19 +298,98 @@ fn run_shard(
     // shared and a static target, which cmake emits routinely -- therefore
     // doubles the count, and the report claimed 102 of 159 units failed where
     // 63 distinct files did. Count files.
+    //
+    // Deduplicating is necessary but not sufficient: clang-tidy's error
+    // counter is *cumulative* over one invocation. It checks "have I seen any
+    // error yet" after each unit rather than "did this unit fail", so once one
+    // unit fails every later unit in the same process is reported too.
+    // Measured directly: `clang-tidy good.c bad.c` names only bad.c, while
+    // `clang-tidy bad.c good.c` names both. These are therefore suspects, and
+    // the caller confirms each against the compiler before reporting a count.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let failed = stderr
+    let suspect = stderr
         .lines()
         .filter_map(|line| line.strip_prefix("Error while processing "))
-        .map(|rest| rest.trim_end_matches('.').to_string())
+        .map(|rest| PathBuf::from(rest.trim_end_matches('.')))
         .collect::<std::collections::BTreeSet<_>>()
-        .len();
+        .into_iter()
+        .collect();
 
     // No diagnostics at all means no file is written.
     let yaml = std::fs::read_to_string(&fixes_path).ok();
     let _ = std::fs::remove_file(&fixes_path);
 
-    ShardResult::Ok { yaml, failed }
+    ShardResult::Ok { yaml, suspect }
+}
+
+/// Count how many of `suspect` genuinely fail to compile.
+///
+/// clang-tidy cannot answer this itself: its "Error while processing" line is
+/// driven by a cumulative error counter, so it names every unit it touched
+/// after the first real failure. Asking the compiler directly is both exact
+/// and cheap -- a syntax-only parse is a fraction of an analysis run, and
+/// only units already under suspicion are re-checked, so a tree that compiles
+/// pays nothing at all.
+fn confirm_failures(
+    suspect: &[PathBuf],
+    compile_db: Option<&CompileDb>,
+    extra_args: &[String],
+    jobs: usize,
+) -> usize {
+    if suspect.is_empty() {
+        return 0;
+    }
+
+    let shards = jobs.clamp(1, suspect.len());
+    let chunk = suspect.len().div_ceil(shards);
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = suspect
+            .chunks(chunk)
+            .map(|files| {
+                scope.spawn(move || {
+                    files
+                        .iter()
+                        .filter(|f| !compiles(f, compile_db, extra_args))
+                        .count()
+                })
+            })
+            .collect();
+
+        handles.into_iter().filter_map(|h| h.join().ok()).sum()
+    })
+}
+
+/// Parse one unit with the flags the build actually uses, without generating
+/// code. `true` means the frontend accepted it, so clang-tidy's claim that it
+/// could not be analyzed was an artifact of batching.
+///
+/// A unit missing from the database counts as compiling: it was never
+/// clang-tidy's to fail, and `unlisted_files` already reports it separately.
+fn compiles(source: &Path, compile_db: Option<&CompileDb>, extra_args: &[String]) -> bool {
+    let mut cmd = std::process::Command::new(crate::ctu::driver_for(source));
+    cmd.arg("-fsyntax-only");
+
+    match compile_db.and_then(|db| db.args_for(source)) {
+        Some(args) => {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        }
+        None if compile_db.is_some() => return true,
+        None => {
+            for arg in extra_args {
+                cmd.arg(arg);
+            }
+        }
+    }
+    cmd.arg(source);
+
+    // A driver that will not start is not evidence the unit is broken.
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_or(true, |st| st.success())
 }
 
 fn shard_fixes_path(index: usize) -> PathBuf {
@@ -522,5 +612,26 @@ FilePath: '{p}'\n      FileOffset: 15\n      Replacements: []\n    Level: Warnin
             default_confidence("cppcoreguidelines-pro-bounds-pointer-arithmetic"),
             Confidence::Low
         );
+    }
+
+    /// clang-tidy names every unit it processed after the first failure, so a
+    /// suspect list is not a failure count. Only units the compiler actually
+    /// rejects are counted.
+    #[test]
+    fn a_unit_that_still_compiles_is_not_counted_as_a_failure() {
+        let dir = std::env::temp_dir().join(format!("kordon-ct-confirm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.c");
+        let bad = dir.join("bad.c");
+        std::fs::write(&good, "int good(void) { return 0; }\n").unwrap();
+        std::fs::write(&bad, "int bad(void) { return 0; } */-\n").unwrap();
+
+        // Both are suspects, as clang-tidy would report them when `bad` is
+        // handed to it first. Only one of them is a real failure.
+        let std_arg = vec!["-std=c11".to_string()];
+        let counted = confirm_failures(&[good.clone(), bad.clone()], None, &std_arg, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(counted, 1, "only the unit that fails to parse should count");
     }
 }
