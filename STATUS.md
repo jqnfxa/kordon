@@ -122,6 +122,55 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## CP_practice: 17 projects, 175 TUs, 2 actionable findings (2026-08-21)
+
+A sweep across one directory of numerical/computational practice projects, all
+C or C++. 314 in-scope findings, of which **1 high and 1 medium** -- the rest
+low-confidence risk patterns.
+
+That ratio is the point. On code written by one author to one set of habits,
+the detailed report stays nearly empty, which is what a tool that reports
+honestly should do on mostly-correct code. The comparison worth making is with
+`pro-bounds-*` on the reference corpus, where 3341 findings said nothing about
+whether the code was right.
+
+**The one real defect**, `lastbit/src/dotprod.c:171`, found by
+`clang-analyzer-core.UndefinedBinaryOperatorResult` with a full path:
+
+```c
+static void split_vector_ozaki(const double* x, size_t n, size_t K, double* layers)
+{
+    ...
+    double* rem = malloc(n * sizeof(double));
+    if (!rem) { return; }        /* returns without filling `layers` */
+```
+
+The function returns `void`, so on allocation failure it leaves the caller's
+output buffer completely uninitialized and has no way to say so. `dot_ozaki`
+then reads `x_layers[i*n + k]` and multiplies garbage. The caller does check
+its own two allocations -- there is simply no channel for this third failure to
+travel back through.
+
+This is the CWE-252 -> CWE-457 shape from CLAUDE.md seen in C: a fallible
+operation with no way to report failure. Worth noting that the path-sensitive
+engine found it and none of the pattern matchers could have, because nothing
+about the syntax at line 171 is unusual.
+
+**The one medium**, `n_body/gold.cpp:197`, is `cmd.erase(cmd.size() - 2)`,
+flagged by `kordon-extent-underflow`. Correct as a claim and not a bug: `cmd`
+is initialised to `"plot "` so it is never shorter than 5. The check cannot see
+the initialiser, which is exactly what "no guard that the container is
+non-empty" means.
+
+### A noise source worth knowing about
+
+`clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling` fires on
+every `printf`, `fprintf`, `snprintf` and `fscanf`, recommending the C11 Annex K
+`_s` variants that essentially only MSVC implements. It produced most of the
+428 out-of-scope findings in this sweep. It is unmapped, so Kordon already
+keeps it out of the report -- but it inflates the raw counts and the coverage-gap
+list on any C project.
+
 ## AvlTree: a validation datapoint for transfer-to-non-owner (2026-08-21)
 
 2500-line header-heavy C++ template project. 25 in-scope findings, 2 high and 1
