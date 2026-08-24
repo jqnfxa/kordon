@@ -41,6 +41,7 @@ static void *(*real_realloc)(void *, size_t);
 static long counter = 0;
 static long fail_at = -1;
 static int  initialised = 0;
+static int  active = 1;
 static const char *report_path = NULL;
 
 /* dlsym itself allocates on some libcs. A small static arena answers those
@@ -48,6 +49,21 @@ static const char *report_path = NULL;
 static char bootstrap[65536];
 static size_t bootstrap_used = 0;
 static int in_dlsym = 0;
+
+/* LD_PRELOAD is inherited by every descendant, so a run command like
+   `ctest` puts the shell and the runner under the interposer alongside the
+   program being tested. Only processes whose executable lives in the build
+   tree are ours; the rest pass through untouched. */
+static int is_target(void) {
+    const char *root = getenv("KORDON_FAULT_ROOT");
+    if (!root || !*root) return 1;
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return 0;
+    exe[n] = '\0';
+    size_t len = strlen(root);
+    return strncmp(exe, root, len) == 0;
+}
 
 static void init(void) {
     if (initialised) return;
@@ -59,6 +75,7 @@ static void init(void) {
     const char *e = getenv("KORDON_FAIL_AT");
     fail_at = e ? atol(e) : -1;
     report_path = getenv("KORDON_ALLOC_COUNT");
+    active = is_target();
     in_dlsym = 0;
     initialised = 1;
 }
@@ -72,9 +89,12 @@ static void *from_bootstrap(size_t size) {
 }
 
 /* Written at exit so the sweep knows how many allocations the run makes. */
+/* Appended, not truncated: a suite that runs several of its own binaries has
+   several targets, and truncating meant the count came from whichever exited
+   last rather than from the one that allocates most. */
 __attribute__((destructor)) static void report(void) {
-    if (!report_path) return;
-    FILE *f = fopen(report_path, "w");
+    if (!report_path || !active) return;
+    FILE *f = fopen(report_path, "a");
     if (!f) return;
     fprintf(f, "%ld\n", counter);
     fclose(f);
@@ -83,6 +103,7 @@ __attribute__((destructor)) static void report(void) {
 void *malloc(size_t size) {
     init();
     if (!real_malloc) return from_bootstrap(size);
+    if (!active) return real_malloc(size);
     if (++counter == fail_at) return NULL;
     return real_malloc(size);
 }
@@ -94,6 +115,7 @@ void *calloc(size_t n, size_t size) {
         if (p) memset(p, 0, n * size);
         return p;
     }
+    if (!active) return real_calloc(n, size);
     if (++counter == fail_at) return NULL;
     return real_calloc(n, size);
 }
@@ -101,6 +123,7 @@ void *calloc(size_t n, size_t size) {
 void *realloc(void *ptr, size_t size) {
     init();
     if (!real_realloc) return from_bootstrap(size);
+    if (!active) return real_realloc(ptr, size);
     if (++counter == fail_at) return NULL;
     return real_realloc(ptr, size);
 }
@@ -153,15 +176,21 @@ pub fn count_allocations(
         .arg(command)
         .current_dir(dir)
         .env("LD_PRELOAD", so)
+        .env("KORDON_FAULT_ROOT", dir)
         .env("KORDON_ALLOC_COUNT", &count_file)
         .output()
         .map_err(|e| format!("could not run the command: {e}"))?;
     let _ = status;
-    std::fs::read_to_string(&count_file)
-        .map_err(|e| format!("the interposer wrote no count: {e}"))?
-        .trim()
-        .parse()
-        .map_err(|e| format!("unreadable allocation count: {e}"))
+
+    // One line per target process. The largest is the one worth sweeping:
+    // sampling across a smaller sibling's range would leave the bigger one's
+    // later allocations untouched.
+    let text = std::fs::read_to_string(&count_file)
+        .map_err(|e| format!("the interposer wrote no count: {e}"))?;
+    text.lines()
+        .filter_map(|l| l.trim().parse::<u64>().ok())
+        .max()
+        .ok_or_else(|| "unreadable allocation count".to_string())
 }
 
 /// Whether injecting a failure actually changes what the program does.
@@ -171,23 +200,29 @@ pub fn count_allocations(
 /// nothing produces zero findings, which is indistinguishable from a program
 /// with no error-path defects.
 ///
-/// It is not hypothetical. Injecting through `LD_PRELOAD` while running under
-/// valgrind was measured to have no effect on this project -- a failure that
-/// reliably drove a function down its error path with the program run directly
-/// never did so under valgrind, even though the interposer still counted the
-/// same 1051 allocations. The sweep reported "no defect observed" for runs
-/// where nothing had been injected at all.
+/// It is not hypothetical, and the cause is now known: valgrind replaces
+/// `malloc` itself, and its replacement wins over an `LD_PRELOAD` interposer.
+/// Measured -- forcing allocation #2 to fail makes this project print "Failed
+/// to load fk6" when run directly, and changes nothing at all under valgrind.
 ///
-/// The check compares a clean run against one with the first allocation forced
-/// to fail. Failing allocation one is close to guaranteed to change *something*
-/// -- exit status or output -- in any program that allocates at all, so no
-/// visible difference means the injection is not reaching the program.
+/// The "same 1051 allocations" that made this look like a counting problem was
+/// a separate bug: `LD_PRELOAD` is inherited by every descendant, so the count
+/// came from the `sh` wrapping the run command rather than from the program.
+/// The program made 21. See [`is_target`] in the interposer.
+///
+/// The check compares a clean run against ones with a chosen allocation forced
+/// to fail. It samples several points rather than only the first: measured on
+/// this project, failing allocation #1 changed nothing observable while #2
+/// through #5 drove the program down its load-failure path and #10 aborted it.
+/// Probing only #1 concluded the mechanism was broken and abandoned a sweep
+/// that would have found all of those.
 pub fn injection_takes_effect(
     so: &Path,
     command: &str,
     dir: &Path,
     wrapper: &[&str],
     timeout_secs: u64,
+    total: u64,
 ) -> bool {
     let run = |fail_at: Option<u64>| -> (Option<i32>, usize) {
         let full = if wrapper.is_empty() {
@@ -201,7 +236,8 @@ pub fn injection_takes_effect(
             .arg("-c")
             .arg(&full)
             .current_dir(dir)
-            .env("LD_PRELOAD", so);
+            .env("LD_PRELOAD", so)
+            .env("KORDON_FAULT_ROOT", dir);
         if let Some(n) = fail_at {
             cmd.env("KORDON_FAIL_AT", n.to_string());
         }
@@ -211,6 +247,13 @@ pub fn injection_takes_effect(
         }
     };
     let clean = run(None);
-    let injected = run(Some(1));
-    clean != injected
+    // Spread over the run rather than clustering at the start: early
+    // allocations are often a runtime's own and can be absorbed without the
+    // program noticing.
+    let probes: Vec<u64> = if total <= 4 {
+        (1..=total.max(1)).collect()
+    } else {
+        (0..4).map(|i| 1 + i * total / 4).collect()
+    };
+    probes.into_iter().any(|n| run(Some(n)) != clean)
 }

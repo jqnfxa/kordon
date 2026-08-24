@@ -501,12 +501,17 @@ fn execute_fault(
         build_dir,
         profile.wrapper,
         config.timeout_secs,
+        total,
     ) {
         return ToolRun::failed(
             tool(profile),
-            "forcing the first allocation to fail changed nothing the program did — the \
-injection is not reaching it, so a sweep would report a clean result for runs where \
-nothing was injected",
+            "forcing an allocation to fail changed nothing the program did, so the \
+injection is not reaching it and a sweep would report a clean result for runs where \
+nothing was injected. Measured cause: valgrind replaces malloc itself, and its \
+replacement wins over the LD_PRELOAD interposer -- the same injection that drives \
+this program down its load-failure path when run directly is ignored entirely under \
+the wrapper. Reaching error paths and watching memory with valgrind cannot currently \
+be done in one run",
         );
     }
 
@@ -535,6 +540,7 @@ nothing was injected",
             .arg(&command)
             .current_dir(build_dir)
             .env("LD_PRELOAD", &so)
+            .env("KORDON_FAULT_ROOT", build_dir)
             .env("KORDON_FAIL_AT", point.to_string())
             .output();
         if out.is_err() {
