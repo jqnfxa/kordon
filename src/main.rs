@@ -383,10 +383,26 @@ fn main() -> Result<()> {
     };
 
     // Only findings from engines that actually completed may enter the report.
+    //
+    // Paths are canonicalized on the way in, because dedup keys on them and a
+    // build database routinely names one file several ways. cJSON compiles its
+    // library source into every test binary, so the same defect arrived as
+    // both `cJSON.c` and `tests/../cJSON.c` -- same inode, different string --
+    // and every finding in that file was reported twice with the count to
+    // match. Doing it here rather than in each runner keeps the rule in one
+    // place, and `starts_with(analysis_root)` below needs it too: an
+    // uncanonicalized path can fail that test and be dropped as external.
     let raw: Vec<_> = runs
         .iter()
         .filter(|r| r.ran())
         .flat_map(|r| r.findings.iter().cloned())
+        .map(|mut f| {
+            f.file = canonical(&f.file);
+            for event in &mut f.events {
+                event.file = canonical(&event.file);
+            }
+            f
+        })
         .collect();
 
     // A defect in libstdc++ or Qt is not this project's defect and cannot be
@@ -569,6 +585,35 @@ fn canonical(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_collapses_the_spellings_dedup_would_otherwise_miss() {
+        // Dedup keys on the path, and a build database routinely names one
+        // file several ways. cJSON compiles its library source into every test
+        // binary, so the same defect arrived as both `cJSON.c` and
+        // `tests/../cJSON.c` -- same inode, different string -- and every
+        // finding in that file was reported twice.
+        let dir = std::env::temp_dir().join(format!("kordon-canon-{}", std::process::id()));
+        let nested = dir.join("tests");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = dir.join("a.c");
+        std::fs::write(&file, "int main(void){return 0;}\n").unwrap();
+
+        let direct = canonical(&file);
+        let round_about = canonical(&nested.join("../a.c"));
+        assert_eq!(direct, round_about);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn canonical_leaves_a_path_that_does_not_exist_alone() {
+        // A finding in a generated file the build has since removed still has
+        // to be reportable; losing the path would be worse than not
+        // shortening it.
+        let missing = PathBuf::from("/nonexistent/kordon/x.c");
+        assert_eq!(canonical(&missing), missing);
+    }
 
     #[test]
     fn recognizes_cpp_extensions_and_ignores_headers() {
