@@ -122,6 +122,77 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## PropositionalCalculusSolver: a found bug, and the one next to it (2026-08-21)
+
+2820 lines of C++ AST/parser code. 19 in-scope findings, 4 high and 1 medium.
+Two results matter, and they point in opposite directions.
+
+### Kordon found a real bug
+
+`parser.cpp:63`, via cppcheck's `containerOutOfBounds` mapped to CWE-119:
+
+```cpp
+if (operands.size() < 2 || operations.size() < 1)
+{
+    if (operations.top() == Token::OpenBracket ||    /* empty stack when the
+        operations.top() == Token::CloseBracket)        right disjunct fired */
+```
+
+The guard fires *because* `operations` may be empty, and the body then calls
+`top()` on it. `std::stack::top()` on an empty stack is undefined behaviour.
+
+### And missed the one eleven lines above it
+
+Built with `-fsanitize=address,undefined -D_GLIBCXX_ASSERTIONS` and fed one
+character, the program aborts:
+
+```
+$ echo '!' | ./task1
+stl_stack.h:232: std::stack<Expression>::top(): Assertion '!this->empty()' failed.
+```
+
+The backtrace lands in `construct_node`, and the failing call is **line 52**:
+
+```cpp
+if (operations.top() == Token::Negation)
+{
+    auto operand = operands.top();     /* line 52 -- operands is empty for "!" */
+```
+
+Kordon reported line 63 and nothing else in the file. Input `()` reaches the
+same line. The project's real build is `-O3` with no assertions, where this is
+silent UB rather than an abort.
+
+### Why the gap is exactly where it is
+
+cppcheck catches line 63 because the *guard contradicts the use*: a condition
+saying "the stack may be empty" sits directly above a call requiring it not to
+be. That is a syntactic contradiction, and detecting it needs no reasoning
+about reachability.
+
+Line 52 has no guard at all. Establishing that `operands` can be empty there
+requires knowing that `parse` calls `construct_node` whenever `operations` is
+non-empty, regardless of what `operands` holds -- interprocedural reasoning
+about a loop in another function.
+
+So the shape Kordon detects is **"a guard that contradicts its own body"**, and
+the shape it misses is **"no guard, and emptiness is reachable from a caller"**.
+The second is both more common and more dangerous, since nothing in the source
+looks wrong at the use site. It is the same wall CWE-119 keeps hitting: the
+remaining misses need range and reachability reasoning, not better patterns.
+
+Worth noting the two-line fix for the project: hoist a
+`if (operations.empty() || operands.empty()) throw` to the top of
+`construct_node`, which closes both lines at once.
+
+### Also: task2 does not compile
+
+`src/task2.cpp:38` uses `binary_function_t`, which is defined nowhere in the
+tree. Both g++ and clang reject it, so `make -f Makefile2` fails; the `task2`
+binary in the working tree is a stale artefact from Nov 2024 that predates the
+breakage. Kordon reported it honestly as "3 of 9 translation unit(s) FAILED TO
+COMPILE and were not analyzed -- findings for them are absent, not clean".
+
 ## What the CP_practice sweep did and did not teach us (2026-08-21)
 
 Worth being blunt about, because the honest answer is "less than the previous
