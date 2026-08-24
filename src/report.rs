@@ -22,6 +22,9 @@ pub struct Report<'a> {
     /// Defects observed at run time. Not merged into `merged`: a static
     /// finding must never inherit a runtime observation's standing.
     pub dynamic: &'a [Finding],
+    /// Runtime observations dropped for landing outside the analyzed tree.
+    /// Counted so "nothing was observed" cannot mean "everything was dropped".
+    pub dynamic_external: usize,
     pub merged: &'a [MergedFinding],
     pub table: &'a CweTable,
     /// Files Kordon handed to the engines.
@@ -132,6 +135,7 @@ impl<'a> Report<'a> {
                 "  Nothing was observed. The paths the command reached are clean;\n\
                 \x20 it says nothing about the paths it did not reach.\n",
             );
+            out.push_str(&self.render_dynamic_external());
             return out;
         }
 
@@ -175,6 +179,7 @@ impl<'a> Report<'a> {
             self.dynamic.len(),
             confirmed
         ));
+        out.push_str(&self.render_dynamic_external());
         out
     }
 
@@ -576,6 +581,23 @@ impl<'a> Report<'a> {
         out
     }
 
+    /// Runtime reports that happened entirely outside the analyzed tree.
+    ///
+    /// Worth a line of its own: a run that observed ten defects in libc and
+    /// none here is a different result from a run that observed nothing, and
+    /// without this they print identically.
+    fn render_dynamic_external(&self) -> String {
+        if self.dynamic_external == 0 {
+            return String::new();
+        }
+        format!(
+            "\n  {} runtime report(s) dropped: every frame was outside the analyzed\n\
+            \x20 tree, in a system or dependency library. The program did commit them,\n\
+            \x20 but there is nothing here to fix.\n",
+            self.dynamic_external
+        )
+    }
+
     /// The caveats, as facts about this run rather than a fixed list.
     fn json_caveats(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -702,6 +724,7 @@ impl<'a> Report<'a> {
             "dynamic_engines": dynamic_engines,
             "findings": findings,
             "dynamic_findings": dynamic_findings,
+            "dynamic_findings_dropped": self.dynamic_external,
             "summary": {
                 "proved": self.proved().len(),
                 "unproven": self.unproven().len(),
@@ -758,6 +781,7 @@ mod tests {
             call_graph,
             suppressed: 0,
             dropped_flags: &[],
+            dynamic_external: 0,
         }
     }
 
@@ -817,5 +841,27 @@ mod tests {
         let after = report(&[], &ran, &[], &table, &graph).json_caveats();
         assert!(!after.iter().any(|c| c.contains("static analysis only")));
         assert!(after.iter().any(|c| c.contains("asan")));
+    }
+
+    /// Dropping every runtime observation and then printing "nothing was
+    /// observed" is the false-clean this whole layer exists to avoid. A run
+    /// that saw ten defects in libc must not read like a run that saw none.
+    #[test]
+    fn dropped_runtime_observations_are_reported_not_silent() {
+        let table = CweTable::builtin().unwrap();
+        let graph = CallGraph::default();
+        let ran = vec![ToolRun {
+            tool: Tool::new("valgrind"),
+            outcome: ToolOutcome::Ran,
+            findings: Vec::new(),
+            notes: Vec::new(),
+        }];
+
+        let mut r = report(&[], &ran, &[], &table, &graph);
+        r.dynamic_external = 10;
+        let text = r.render_text(false, false, false);
+
+        assert!(text.contains("10 runtime report(s) dropped"));
+        assert_eq!(r.render_json()["dynamic_findings_dropped"], 10);
     }
 }

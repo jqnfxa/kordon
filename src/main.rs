@@ -476,17 +476,38 @@ fn main() -> Result<()> {
 
     let merged = dedup::merge(raw);
 
-    let dynamic_findings: Vec<_> = dynamic_runs
+    // Canonicalized for the same reason the static findings above are: the
+    // `starts_with` test below is a string comparison, and a runtime report
+    // that names the tree by a different-but-equivalent path fails it.
+    let dynamic_raw: Vec<_> = dynamic_runs
         .iter()
         .filter(|r| r.ran())
         .flat_map(|r| r.findings.iter().cloned())
+        .map(|mut f| {
+            f.file = canonical(&f.file);
+            for event in &mut f.events {
+                event.file = canonical(&event.file);
+            }
+            f
+        })
+        .collect();
+
+    // A runtime report whose frames are all outside the tree is real -- the
+    // program did do it -- but there is nothing to fix here, so it is dropped
+    // like an external static finding. Counted, because dropping observations
+    // silently is how a run that saw something prints "nothing was observed".
+    let dynamic_before = dynamic_raw.len();
+    let dynamic_findings: Vec<_> = dynamic_raw
+        .into_iter()
         .filter(|f| f.file.starts_with(&analysis_root))
         .collect();
+    let dynamic_external = dynamic_before - dynamic_findings.len();
 
     let report = Report {
         runs: &runs,
         dynamic_runs: &dynamic_runs,
         dynamic: &dynamic_findings,
+        dynamic_external,
         merged: &merged,
         table: &table,
         analyzed_files: sources.len(),
