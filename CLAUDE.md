@@ -95,7 +95,22 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 **Prior art to reuse, not re-derive:** `/home/shard/VsCode/acl/` holds a working shell+Python prototype of this exact pipeline (`scripts/cwe_summary.py`, `run-cppcheck.sh`, `run-codechecker.sh`, `analysis/cwe_map.json`) plus a 714-finding report from a real run. Two ideas ported: the curated cppcheck override list, and `--require-cwe` selftesting (a config regression is indistinguishable from clean code unless you assert what *must* be found). Cross-tool dedup was **absent** there — it is Kordon's actual value-add. **ACL itself has no LICENSE file: treat as proprietary.** `analysis/repro/*.cpp` quote real ACL source in comments and must not be copied into this repo; `cwe_probe.cpp` is synthetic and safe to adapt. ACL is intended later as an *external* validation target — run Kordon on it and diff against the existing report.
 
+## Ground truth measured while building (2026-08-24) — don't re-derive
+
+**clang-tidy's "Error while processing" is a cumulative counter, not a per-unit verdict.** It asks "have I seen an error yet" after each unit, so once one unit in an invocation fails, every unit processed *after* it is named too. Measured directly: `clang-tidy good.c bad.c` names only bad.c; `clang-tidy bad.c good.c` names both. Since Kordon shards files across jobs, one broken header inflated 26 real failures to 51. The names are now treated as suspects and confirmed with a syntax-only parse. That count is the report's single most important note, so its accuracy matters more than most.
+
+**`--checks='-*,clang-diagnostic-error'` (and `-*,clang-diagnostic-*`) silently analyzes nothing** — clang-tidy exits with "no checks enabled" and reports zero errors even on a file that genuinely fails to parse. Never use a `-*`-only check set to probe whether a unit compiles; ask the compiler, or use `clang-check -p <db>`.
+
+**`LD_PRELOAD` is inherited by every descendant.** With `--run "ctest ..."` the shell, the runner and the program all ran under the fault interposer, sharing one count file with last-writer-wins — so the "1051 allocations" the sweep planned around were `sh`'s. The program made 21, ctest 4491. The interposer is now scoped to executables inside the build tree.
+
+**valgrind replaces `malloc` itself and beats an `LD_PRELOAD` interposer.** Injection that drives a program down its error path when run directly is ignored entirely under the valgrind wrapper; `--soname-synonyms=somalloc=NONE` does not help. This is why the `fault` profile cannot currently do both jobs in one run — see the open questions below.
+
+**Qt projects need a *build*, not just a configure, before analysis.** AUTOUIC/AUTOMOC generate `ui_*.h` and moc sources at build time; analyzing a configured-but-unbuilt tree failed 26 of 28 TUs. Build first, then analyze.
+
+**A cmake project with both a shared and a static target lists every source twice** in `compile_commands.json` (159 files, 318 entries here). Kordon walks the filesystem for sources rather than the database, so this does not double the work — but it does double clang-tidy's raw diagnostic counts and its per-compile-command error lines.
+
 ## Open questions for next session
+- **The `fault` profile cannot inject under valgrind** (measured, see above). Direction: drop the valgrind wrapper from the sweep, detect defects from the target's exit status and stderr, and recover a stack with `gdb -batch -ex run -ex bt` on abnormal termination — that worked by hand. Needs a gdb-backtrace → `RuntimeReport` parser; note `RuntimeReport::anchor` returns `None` for a frameless report, so a finding with no frames cannot be emitted at all.
 - **CTU via CodeChecker is the highest-value next step** — it is the measured blocker for the whole fallible-init class (`testdata/uninit_owner/`). CodeChecker is not installed on this machine (`pip install codechecker` in a venv).
 - **CWE-762 vs 763 for `unix.MismatchedDeallocator`.** Kordon maps it to 762 (literally "mismatched memory management routines"); prior ACL work mapped it to 763 because their requirements list named 763. Both are in the catalog. Confirm which the requirements actually want.
 - Dedup is keyed on `file + line + CWE`, so two engines reporting one defect on *adjacent* lines stay separate (seen: clang-analyzer flags a dead store at the initialization line, cppcheck at the overwrite line). Consider a small line window.
