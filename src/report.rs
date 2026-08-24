@@ -576,6 +576,51 @@ impl<'a> Report<'a> {
         out
     }
 
+    /// The caveats, as facts about this run rather than a fixed list.
+    fn json_caveats(&self) -> Vec<String> {
+        let mut out = Vec::new();
+
+        if self
+            .runs
+            .iter()
+            .any(|r| r.ran() && r.tool.as_str().contains("ctu"))
+        {
+            out.push(
+                "cross-TU analysis covered only units that compiled and were indexed"
+                    .to_string(),
+            );
+        } else {
+            out.push("single-translation-unit analysis only; CTU not enabled".to_string());
+        }
+
+        let dynamic_ran: Vec<_> = self
+            .dynamic_runs
+            .iter()
+            .filter(|r| r.ran())
+            .map(|r| r.tool.as_str().to_string())
+            .collect();
+        if dynamic_ran.is_empty() {
+            out.push("static analysis only; no sanitizer or dynamic evidence".to_string());
+        } else {
+            // What a sanitizer did not see is bounded by what the command
+            // executed, which is a narrower claim than "clean".
+            out.push(format!(
+                "dynamic evidence covers only what the run command executed ({})",
+                dynamic_ran.join(", ")
+            ));
+        }
+
+        if self.unlisted_files > 0 {
+            out.push(format!(
+                "{} file(s) absent from compile_commands.json were not analyzed",
+                self.unlisted_files
+            ));
+        }
+
+        out.push("absence of findings is not a proof of absence of defects".to_string());
+        out
+    }
+
     /// Machine-readable form, for CI and for diffing runs against each other.
     pub fn render_json(&self) -> serde_json::Value {
         let findings: Vec<_> = self
@@ -606,21 +651,44 @@ impl<'a> Report<'a> {
             })
             .collect();
 
-        let engines: Vec<_> = self
-            .runs
+        let describe_run = |run: &ToolRun| {
+            let (status, detail) = match &run.outcome {
+                ToolOutcome::Ran => ("ran", None),
+                ToolOutcome::Skipped(why) => ("skipped", Some(why.clone())),
+                ToolOutcome::Failed(why) => ("failed", Some(why.clone())),
+            };
+            serde_json::json!({
+                "tool": run.tool.as_str(),
+                "status": status,
+                "detail": detail,
+                "raw_findings": run.findings.len(),
+                "notes": run.notes,
+            })
+        };
+
+        let engines: Vec<_> = self.runs.iter().map(&describe_run).collect();
+
+        // The dynamic layer is reported separately here for the same reason it
+        // is a separate section in the text form: a sanitizer report is a
+        // record of a defect happening, not an inference about the code, and
+        // flattening the two would let a pattern match inherit that standing.
+        let dynamic_engines: Vec<_> = self.dynamic_runs.iter().map(&describe_run).collect();
+
+        let dynamic_findings: Vec<_> = self
+            .dynamic
             .iter()
-            .map(|run| {
-                let (status, detail) = match &run.outcome {
-                    ToolOutcome::Ran => ("ran", None),
-                    ToolOutcome::Skipped(why) => ("skipped", Some(why.clone())),
-                    ToolOutcome::Failed(why) => ("failed", Some(why.clone())),
-                };
+            .map(|f| {
                 serde_json::json!({
-                    "tool": run.tool.as_str(),
-                    "status": status,
-                    "detail": detail,
-                    "raw_findings": run.findings.len(),
-                    "notes": run.notes,
+                    "cwe": f.cwe,
+                    "cwe_name": f.cwe.and_then(|c| self.table.name_of(c)),
+                    "tool": f.tool.as_str(),
+                    "native_id": f.native_id,
+                    "file": f.file,
+                    "line": f.line,
+                    "column": f.column,
+                    "severity": f.severity.to_string(),
+                    "message": f.message,
+                    "events": f.events,
                 })
             })
             .collect();
@@ -631,7 +699,9 @@ impl<'a> Report<'a> {
             "unlisted_files": self.unlisted_files,
             "external_findings_dropped": self.external_findings,
             "engines": engines,
+            "dynamic_engines": dynamic_engines,
             "findings": findings,
+            "dynamic_findings": dynamic_findings,
             "summary": {
                 "proved": self.proved().len(),
                 "unproven": self.unproven().len(),
@@ -640,12 +710,11 @@ impl<'a> Report<'a> {
                 "unmapped": self.unmapped().len(),
             },
             // Machine-readable form of the caveats section, so CI cannot treat
-            // an empty finding list as proof of safety.
-            "coverage_caveats": [
-                "single-translation-unit analysis only; CTU not enabled",
-                "static analysis only; no sanitizer or dynamic evidence",
-                "absence of findings is not a proof of absence of defects",
-            ],
+            // an empty finding list as proof of safety. Derived from what
+            // actually ran: hardcoding these told a --ctu --dynamic run that
+            // neither had happened, which is the exact inaccuracy the block
+            // exists to prevent.
+            "coverage_caveats": self.json_caveats(),
         })
     }
 }
@@ -662,5 +731,91 @@ fn confidence_tag(confidence: Confidence) -> &'static str {
         Confidence::High => "confidence: high",
         Confidence::Medium => "confidence: medium",
         Confidence::Low => "confidence: low",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::finding::{Severity, Tool};
+
+    fn report<'a>(
+        runs: &'a [ToolRun],
+        dynamic_runs: &'a [ToolRun],
+        dynamic: &'a [Finding],
+        table: &'a CweTable,
+        call_graph: &'a CallGraph,
+    ) -> Report<'a> {
+        Report {
+            runs,
+            dynamic_runs,
+            dynamic,
+            merged: &[],
+            table,
+            analyzed_files: 1,
+            unlisted_files: 0,
+            external_findings: 0,
+            call_graph,
+            suppressed: 0,
+            dropped_flags: &[],
+        }
+    }
+
+    /// The JSON form is what CI reads. A sanitizer report that reaches the
+    /// text report but not this one is worse than no dynamic layer at all:
+    /// the run claims to have executed the code and shows nothing.
+    #[test]
+    fn runtime_observations_reach_the_json_form() {
+        let table = CweTable::builtin().unwrap();
+        let graph = CallGraph::default();
+        let observed = Finding {
+            tool: Tool::new("asan"),
+            native_id: "heap-use-after-free".to_string(),
+            cwe: Some(416),
+            cwe_source: CweSource::Mapped,
+            file: std::path::PathBuf::from("/p/a.c"),
+            line: 9,
+            column: 1,
+            severity: Severity::Error,
+            confidence: Confidence::High,
+            message: "heap-use-after-free".to_string(),
+            events: Vec::new(),
+            proof: None,
+        };
+        let dynamic_runs = vec![ToolRun {
+            tool: Tool::new("asan"),
+            outcome: ToolOutcome::Ran,
+            findings: vec![observed.clone()],
+            notes: Vec::new(),
+        }];
+        let dynamic = vec![observed];
+
+        let json = report(&[], &dynamic_runs, &dynamic, &table, &graph).render_json();
+
+        assert_eq!(json["dynamic_findings"][0]["cwe"], 416);
+        assert_eq!(json["dynamic_engines"][0]["status"], "ran");
+    }
+
+    /// The caveats are the report's own account of what it did not do. Stating
+    /// "no sanitizer" after a sanitizer ran is the inaccuracy the section
+    /// exists to prevent, so it has to be derived rather than fixed text.
+    #[test]
+    fn caveats_stop_claiming_static_only_once_a_sanitizer_has_run() {
+        let table = CweTable::builtin().unwrap();
+        let graph = CallGraph::default();
+
+        let none: Vec<ToolRun> = Vec::new();
+        let quiet = report(&[], &none, &[], &table, &graph).json_caveats();
+        assert!(quiet.iter().any(|c| c.contains("static analysis only")));
+
+        let ran = vec![ToolRun {
+            tool: Tool::new("asan"),
+            outcome: ToolOutcome::Ran,
+            findings: Vec::new(),
+            notes: Vec::new(),
+        }];
+        let after = report(&[], &ran, &[], &table, &graph).json_caveats();
+        assert!(!after.iter().any(|c| c.contains("static analysis only")));
+        assert!(after.iter().any(|c| c.contains("asan")));
     }
 }
