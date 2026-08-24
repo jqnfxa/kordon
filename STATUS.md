@@ -122,6 +122,42 @@ The general lesson is the one this project keeps relearning: confidence has to
 track whether the finding is a *defect*, not only whether the underlying fact
 is certain. A dead store is certainly a dead store; that is not the same claim.
 
+## The reachability gap is not closable by AST matching — measured (2026-08-21)
+
+Prompted by the `parser.cpp:52` miss, an "unguarded container access" check was
+prototyped and **abandoned on measurement**, not on taste. The result is worth
+keeping so it is not attempted again.
+
+The check: flag `top()`/`front()`/`back()`/`pop()` on a container member where
+the enclosing function contains no `empty()`/`size()` call on that same member.
+Same shape as every other `kordon-` check here.
+
+On the one file it was written for:
+
+| form | matches |
+|---|---|
+| trigger alone | **16** in a 200-line file |
+| with the function-scope exemption | **0** |
+
+Both numbers are useless, and the reason they are useless is the same fact.
+`construct_node` *does* call `operands.size()` and `operations.size()` -- at
+line 61, **after** the unguarded uses at 49 and 52. A function-scope exemption
+cannot distinguish "checked before the use" from "checked after it", so it
+exempts the very function containing the defect. Removing the exemption leaves
+16 findings in 200 lines.
+
+This is the ordering problem that has now blocked three separate checks
+(`kordon-index-used-before-check` solved it only *within one expression*, where
+short-circuit order is visible in the AST). AST matchers have no predicate for
+"this statement precedes that one", and every workaround so far has been to
+widen to function scope and accept erring toward silence. Here that erring
+silences everything.
+
+**So the remaining CWE-119/476 misses need a different mechanism, not a better
+pattern.** The options are a real Clang SA checker plugin, which sees a CFG and
+can answer reachability, or accepting the gap. What they do not need is another
+matcher.
+
 ## PropositionalCalculusSolver: a found bug, and the one next to it (2026-08-21)
 
 2820 lines of C++ AST/parser code. 19 in-scope findings, 4 high and 1 medium.
