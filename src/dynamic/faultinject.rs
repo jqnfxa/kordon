@@ -163,3 +163,54 @@ pub fn count_allocations(
         .parse()
         .map_err(|e| format!("unreadable allocation count: {e}"))
 }
+
+/// Whether injecting a failure actually changes what the program does.
+///
+/// This is the fault-injection equivalent of checking that a build carried its
+/// sanitizer flags, and it exists for the same reason: a sweep that injects
+/// nothing produces zero findings, which is indistinguishable from a program
+/// with no error-path defects.
+///
+/// It is not hypothetical. Injecting through `LD_PRELOAD` while running under
+/// valgrind was measured to have no effect on this project -- a failure that
+/// reliably drove a function down its error path with the program run directly
+/// never did so under valgrind, even though the interposer still counted the
+/// same 1051 allocations. The sweep reported "no defect observed" for runs
+/// where nothing had been injected at all.
+///
+/// The check compares a clean run against one with the first allocation forced
+/// to fail. Failing allocation one is close to guaranteed to change *something*
+/// -- exit status or output -- in any program that allocates at all, so no
+/// visible difference means the injection is not reaching the program.
+pub fn injection_takes_effect(
+    so: &Path,
+    command: &str,
+    dir: &Path,
+    wrapper: &[&str],
+    timeout_secs: u64,
+) -> bool {
+    let run = |fail_at: Option<u64>| -> (Option<i32>, usize) {
+        let full = if wrapper.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {command}", wrapper.join(" "))
+        };
+        let mut cmd = Command::new("timeout");
+        cmd.arg(timeout_secs.to_string())
+            .arg("sh")
+            .arg("-c")
+            .arg(&full)
+            .current_dir(dir)
+            .env("LD_PRELOAD", so);
+        if let Some(n) = fail_at {
+            cmd.env("KORDON_FAIL_AT", n.to_string());
+        }
+        match cmd.output() {
+            Ok(o) => (o.status.code(), o.stdout.len() + o.stderr.len()),
+            Err(_) => (None, 0),
+        }
+    };
+    let clean = run(None);
+    let injected = run(Some(1));
+    clean != injected
+}

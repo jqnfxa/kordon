@@ -493,6 +493,23 @@ fn execute_fault(
         Err(e) => return ToolRun::failed(tool(profile), e),
     };
 
+    // A sweep that injects nothing reports zero findings, which reads exactly
+    // like a program with no error-path defects.
+    if !faultinject::injection_takes_effect(
+        &so,
+        &config.command,
+        build_dir,
+        profile.wrapper,
+        config.timeout_secs,
+    ) {
+        return ToolRun::failed(
+            tool(profile),
+            "forcing the first allocation to fail changed nothing the program did — the \
+injection is not reaching it, so a sweep would report a clean result for runs where \
+nothing was injected",
+        );
+    }
+
     let budget = config.fault_max.max(1) as u64;
     let points: Vec<u64> = if total <= budget {
         (1..=total).collect()

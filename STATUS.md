@@ -162,10 +162,29 @@ miss were tested and both were wrong:
   failing every `malloc(40)` also fails the caller's own buffer, which
   `dot_ozaki` null-checks, so the buggy path is skipped.
 
-**Why the sweep misses it is not established.** Recording that as an open
-question rather than a conclusion: the feature is correct and the negative is
-real, and one of those two facts is more interesting than any story that would
-reconcile them.
+A third hypothesis was tested and also wrong: that `LD_PRELOAD` injection has
+no effect under valgrind. It does -- forcing the first allocation to fail
+changes the program's exit status and output under the wrapper, which is now
+asserted before every sweep. What *does* shift under valgrind is the ordinal of
+a given *size*: `malloc(24)` call number two is a different call site with
+valgrind in the process than without, which is what made an earlier
+size-targeted experiment look like proof that injection was inert.
+
+**Why the full sweep misses this defect is still not established.** Recording
+that as an open question rather than a conclusion: the mechanism is verified,
+the error path is verified reachable, the detector is verified capable, and the
+sweep still finds nothing. One of those is wrong and it is not yet known which.
+
+### The safeguard that came out of it
+
+A sweep that injects nothing reports zero findings, which reads exactly like a
+program with no error-path defects -- the same failure mode as an uninstrumented
+sanitizer build, and the same answer: check rather than assume. Before
+sweeping, the profile runs the command once cleanly and once with allocation
+one forced to fail. Failing the first allocation is close to guaranteed to
+change *something* in any program that allocates at all, so no observable
+difference means the injection is not reaching the program, and that is
+reported as a failure instead of a clean result.
 
 ## Suppressions: keeping an engine's judgement, removing one wrong case (2026-08-21)
 
