@@ -289,6 +289,21 @@ Five times the recall, and the best discrimination measured for this CWE — but
 
 **Scorer fix, and it moved the numbers:** the truth extractor only recognised functions ending in `_bad`, so it missed `..._54e_badSink` and the whole multi-file naming. Classifying on the substring instead raised the flawed-function count per CWE (CWE-121: 36 to 43). Baselines taken before this are not comparable to ones taken after.
 
+## CWE-457's false positives are load-bearing (2026-08-25)
+
+`cppcoreguidelines-init-variables` flags every declaration without an initialiser, so on CWE-457 it reports **127 of 170 correct functions** — a 74.7% false-positive rate, the worst of any check Kordon runs, and the entirety of that CWE's noise. It looks like the obvious next thing to delete.
+
+Measured both ways first:
+
+| | recall | FP | discrim | **surfaced recall** | **surfaced FP** |
+|---|---|---|---|---|---|
+| with it | 100% | 74.7% | +25.3 | **57.5%** | **4.7%** |
+| without it | 57.5% | 4.7% | +52.8 | **57.5%** | **4.7%** |
+
+Removing it doubles discrimination, which reads as an improvement until the surfaced columns are compared: **identical**. The check is low-confidence, so it never reaches the detailed report either way — it costs a reader nothing. And it is the only thing that finds 17 of those 40 flawed functions.
+
+Keep it. This is the opposite of `cppcoreguidelines-pro-bounds-array-to-pointer-decay`, which was removed for having *zero* exclusive coverage. **A high false-positive rate is not by itself a reason to remove a check; the questions are what it finds that nothing else does, and whether its noise reaches the reader.**
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
@@ -338,7 +353,7 @@ verdict in the table so the next session starts where this one stopped.
 | 5 | 122 heap overflow | 35.7% | triage first | not started |
 | 6 | 590 free non-heap | 37.9% | triage first | not started |
 | 7 | 124/127 under-read/write | 47-53% | triage first | not started |
-| 8 | 457 uninit | 100% / 69% FP | works; the FP tier may be worth trimming | not started |
+| 8 | 457 uninit | 100% / 74.7% FP | noise is real, correctly tiered, and earns its place | **done — keep as is** |
 | 9 | 401/415/416/476/563/762 | 57-90% | working; revisit last | not started |
 
 **Start with CWE-121**, where the dominant shape is already identified: an

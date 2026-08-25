@@ -90,6 +90,20 @@ cppcoreguidelines-pro-bounds-constant-array-index";
 /// went unreported. The compiler flags both.
 const FORCED_WARNINGS: &[&str] = &["-Wunused-variable"];
 
+// `cppcoreguidelines-init-variables` looks like the next thing to remove and
+// is not. It flags every declaration without an initialiser, so on Juliet's
+// CWE-457 it reports 127 of 170 *correct* functions -- a 74.7% false-positive
+// rate, the worst of any check here, and it is the whole of that CWE's noise.
+//
+// Measured both ways before touching it. Removing it takes recall from 100%
+// to 57.5% and discrimination from +25.3 to +52.8, which reads like an
+// improvement until the surfaced tiers are compared: **57.5% recall at 4.7%
+// false positives, identical with and without it**, because it is
+// low-confidence and never reaches the detailed report. So it costs a reader
+// nothing, and it is the only thing that finds 17 of those 40 flawed
+// functions. That is the opposite of the decay check below, which was removed
+// for having zero exclusive coverage.
+//
 // `cppcoreguidelines-pro-bounds-array-to-pointer-decay` was here and was
 // removed. Measured on the reference corpus: 622 findings, zero of which
 // landed on a defect its maintainers fixed, zero exclusive coverage of any
