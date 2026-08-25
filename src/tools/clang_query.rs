@@ -76,6 +76,9 @@ pub enum Exemption {
     /// Assembled whole: the same guards as `ArithmeticGuard`, over a left
     /// operand narrowed to a container-extent accessor.
     ExtentUnderflow,
+    /// Assembled whole: every clause has to back-reference the same loop
+    /// variable, and the exemptions describe the two ways of bounding it.
+    LoopIndexEscape,
     /// Assembled whole, because the release must be recognised as releasing
     /// the same member that is being overwritten.
     ReinitWithoutFree,
@@ -107,6 +110,9 @@ impl QueryCheck {
         if self.exemption == Exemption::DeadStore {
             return dead_store_matcher();
         }
+        if self.exemption == Exemption::LoopIndexEscape {
+            return loop_index_escape_matcher();
+        }
         if self.exemption == Exemption::TransferToNonOwner {
             return transfer_to_non_owner_matcher();
         }
@@ -128,6 +134,7 @@ impl QueryCheck {
             | Exemption::ExtentUnderflow
             | Exemption::ReinitWithoutFree
             | Exemption::DeadStore
+            | Exemption::LoopIndexEscape
             | Exemption::TransferToNonOwner => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
@@ -1115,6 +1122,146 @@ pub const TRANSFER_TO_NON_OWNER: QueryCheck = QueryCheck {
 raw pointers; nothing will ever free it",
 };
 
+/// A loop variable used as an index after the loop it counted.
+///
+/// A `for` loop that ends normally leaves its counter holding the bound, so a
+/// later `arr[i]` reads one past the end. From `rtklib_mod`, `ddidx()`:
+///
+///     for (i=k;i<k+MAXSAT;i++) {
+///         ...
+///         if (...) { rtk->ssat[i-k].fix[f]=2; break; }
+///     }
+///     /* no break taken -> i == k+MAXSAT */
+///     ... rtk->ssat[i-k].vsat[f] ...        // ssat[MAXSAT], one past the end
+///
+/// Worth having as a shape rule rather than leaving to value analysis: it is
+/// purely syntactic -- no runtime values, no path sensitivity, no cross-TU
+/// reasoning -- yet no engine Kordon runs reported it, with CTU on, while
+/// UBSan caught it immediately. cppcheck does report this class when its value
+/// analysis happens to bound the loop (`ura_value[15]`), which is exactly why
+/// a rule that does not depend on that is an improvement.
+///
+/// Two exemptions, both describing a real bound on the escaped value, and both
+/// required to sit **outside** the loop that incremented it -- a test inside
+/// the loop is the loop's own business:
+///
+///   * a clamp -- `if (li > 1219-1) { li = 1219-1; }`;
+///   * an early exit -- `if (i>=k+MAXSAT) { continue; }`.
+///
+/// The comparison must have the variable as an operand. Exempting any `if`
+/// that merely *mentions* it is far too loose: `ddidx` guards its inner loop
+/// with `if (i==j||...) continue;`, which names `i` but bounds nothing, and
+/// accepting that hid the defect this check exists to find.
+///
+/// A third exemption covers the short-circuit idiom, where the bound and the
+/// subscript share one `&&` chain and the bound is evaluated first:
+///
+///     for (nb=0;nr+nb<n&&obs[nr+nb].rcv==2;nb++);
+///
+/// Measured: **0 positions across 159 pkt-astronomia units**, and 21 across
+/// ten rtklib_mod units. That gap is the check's weakness, not a property of
+/// the defect: terse C reuses `i`, `j` and `k` as both loop counters and
+/// general-purpose indices within one function, and each reuse looks exactly
+/// like an escape. The reassignment exemption above removes the ones written
+/// as a plain assignment; the ones written as a second loop's counter
+/// (`for (i=j=0;...)` then `j` incremented elsewhere) survive it, because
+/// separating them needs statement order.
+///
+/// Medium rather than high for that reason. Kept at medium rather than low
+/// because the position it was built for -- `ddidx`, a real out-of-range read
+/// -- is reported here and by no other engine Kordon runs, with CTU on.
+pub const LOOP_INDEX_ESCAPE: QueryCheck = QueryCheck {
+    id: "kordon-loop-index-escape",
+    base: "", // built by matcher(); see Exemption::LoopIndexEscape
+    exemption: Exemption::LoopIndexEscape,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this indexes with a loop counter outside the loop that incremented it -- when the \
+loop ends without breaking, the counter holds the bound, and nothing here clamps it or exits first",
+};
+
+fn loop_index_escape_matcher() -> String {
+    // Every clause back-references the same variable, so the whole matcher is
+    // assembled rather than composed from a base plus guards.
+    let idx = "declRefExpr(to(varDecl(equalsBoundNode(\"idx\"))))";
+    let own_loop = format!("forStmt(hasIncrement(hasDescendant({idx})))");
+
+    // Strict: the variable is an operand of the comparison. Used for the
+    // guard exemptions, where looseness costs real detections.
+    let relational = format!(
+        "binaryOperator(hasAnyOperatorName(\">=\", \">\", \"<\", \"<=\"), \
+hasEitherOperand(ignoringParenImpCasts({idx})))"
+    );
+    // A loop leaves its counter at one specific value, so equality against
+    // that value guards just as well as a relational test: `if (i == -1)` after
+    // a downward loop, or `if (i != epm->nsegments)` after an upward one.
+    //
+    // The other side must not be another bare local, though. `ddidx` skips
+    // self-pairing with `if (i==j||...) continue;`, which bounds nothing, and
+    // accepting that as a guard loses the defect this check was built for.
+    // A literal or a member expression like `epm->nsegments` is a bound; a
+    // second loop variable is not.
+    let equality = format!(
+        "binaryOperator(hasAnyOperatorName(\"==\", \"!=\"), \
+hasEitherOperand(ignoringParenImpCasts({idx})), \
+unless(hasEitherOperand(ignoringParenImpCasts(declRefExpr(unless(to(varDecl(\
+equalsBoundNode(\"idx\")))))))))"
+    );
+    let cmp_operand = format!("anyOf({relational}, {equality})");
+    // Loose: the variable appears anywhere in an operand, so `nr+nb<n` counts.
+    // Only used for the short-circuit exemption, where the bound is textually
+    // adjacent and the arithmetic is part of the idiom.
+    let cmp_nested = format!(
+        "binaryOperator(hasAnyOperatorName(\">=\", \">\", \"<\", \"<=\"), \
+hasEitherOperand(hasDescendant({idx})))"
+    );
+
+    // The condition *is* the comparison as often as it contains one, and
+    // hasDescendant alone matches only the latter.
+    let cond = format!("hasCondition(anyOf(ignoringParenImpCasts({cmp_operand}), \
+hasDescendant({cmp_operand})))");
+
+    let clamp = format!(
+        "ifStmt({cond}, hasDescendant(binaryOperator(isAssignmentOperator(), \
+hasLHS({idx}))), unless(hasAncestor({own_loop})))"
+    );
+    let early_exit = format!(
+        "ifStmt({cond}, hasDescendant(anyOf(continueStmt(), breakStmt(), returnStmt(), \
+gotoStmt())), unless(hasAncestor({own_loop})))"
+    );
+    let short_circuit =
+        format!("binaryOperator(hasOperatorName(\"&&\"), hasDescendant({cmp_nested}))");
+
+    // Any assignment to the counter outside a loop. Terse C reuses `i`, `j`
+    // and `k` as both loop counters and general-purpose indices inside one
+    // function -- `i=(int)(p-syscodes);` and later `tobs[i][nt]` -- and
+    // without this the check reported 30 such positions in ten rtklib_mod
+    // units, nearly all of them that reuse rather than a defect.
+    //
+    // It costs one real detection: `pktaComputeGamma` is preceded by the dead
+    // stores `li = 0; ri = 1219-1;`, which look identical to a reassignment.
+    // Telling those apart needs statement order, which matchers cannot
+    // express. Paying that is reasonable here because cppcheck's value
+    // analysis already reports that position, and nothing reported ddidx.
+    let reassigned = format!(
+        "binaryOperator(isAssignmentOperator(), hasLHS({idx}), unless(hasAncestor(forStmt())))"
+    );
+
+    format!(
+        "arraySubscriptExpr(\
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasIndex(hasDescendant(declRefExpr(to(varDecl(hasLocalStorage()).bind(\"idx\"))))), \
+hasAncestor(functionDecl(hasDescendant({own_loop}))), \
+unless(hasAncestor({own_loop})), \
+unless(hasAncestor({short_circuit})), \
+unless(hasAncestor(functionDecl(hasDescendant({clamp})))), \
+unless(hasAncestor(functionDecl(hasDescendant({early_exit})))), \
+unless(hasAncestor(functionDecl(hasDescendant({reassigned}))))\
+)"
+    )
+}
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -1127,6 +1274,7 @@ pub const CHECKS: &[QueryCheck] = &[
     REINIT_WITHOUT_FREE,
     DEAD_STORE,
     TRANSFER_TO_NON_OWNER,
+    LOOP_INDEX_ESCAPE,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1735,5 +1883,32 @@ Match #2:\n\n\
             let c = table.classify(&tool(), check.id, check.message, None, Confidence::Low);
             assert!(c.cwe.is_some(), "{} has no CWE mapping", check.id);
         }
+    }
+
+    /// The exemptions must demand a *bound* on the counter, not a mention of
+    /// it. `ddidx` guards its inner loop with `if (i==j||...) continue;`,
+    /// which names `i` and bounds nothing; accepting that as a guard hid the
+    /// out-of-range read this check exists to find.
+    #[test]
+    fn loop_index_escape_guards_require_a_comparison_not_a_mention() {
+        let m = LOOP_INDEX_ESCAPE.matcher();
+        assert!(!m.contains("allOf("));
+        assert!(m.contains("hasAnyOperatorName(\">=\", \">\", \"<\", \"<=\")"));
+        // Equality guards count too -- a loop leaves its counter at one value
+        // -- but only against a constant or a container bound. Dropping the
+        // `unless` here re-admits `if (i==j) continue;` as a guard and loses
+        // the rtklib_mod defect.
+        assert!(m.contains("hasAnyOperatorName(\"==\", \"!=\")"));
+        assert!(m.contains("unless(hasEitherOperand(ignoringParenImpCasts(declRefExpr("));
+        // Both remediation shapes are recognised: clamp the counter, or leave
+        // before using it.
+        assert!(m.contains("isAssignmentOperator()"));
+        assert!(m.contains("continueStmt()"));
+        // A condition often *is* the comparison rather than containing one;
+        // matching only descendants silently exempted nothing at all.
+        assert!(m.contains("hasCondition(anyOf(ignoringParenImpCasts("));
+        // A test inside the loop is the loop's own business, so every
+        // exemption is scoped to statements outside it.
+        assert!(m.contains("unless(hasAncestor(forStmt(hasIncrement("));
     }
 }

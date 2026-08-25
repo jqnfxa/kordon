@@ -937,6 +937,16 @@ check = "kordon-unchecked-constant-index"
 cwe = 119
 confidence = "medium"
 
+# A loop counter used to index after its loop. The read lands one past the end
+# when the loop ends without breaking. Medium rather than high: a plain
+# reassignment between the loop and the use is indistinguishable from a dead
+# store before it without statement order, which AST matchers cannot express.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-loop-index-escape"
+cwe = 125
+confidence = "medium"
+
 # ------------------------------------------------------------------ cppcheck
 # cppcheck emits CWE ids itself, so these rules exist only to *override* a
 # native id Kordon considers wrong or too coarse. Everything else flows through
