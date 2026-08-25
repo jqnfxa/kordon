@@ -113,29 +113,29 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-**Baseline, 40 files per CWE, default flags: 51.5% recall at 14.6% false positives — 38.5% / 1.9% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add more; see the per-CWE notes.)
+**Baseline, 40 files per CWE, default flags: 57.0% recall at 12.7% false positives — 45.1% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
 
 Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
 | CWE | recall | FP | discrim | note |
 |---|---|---|---|---|
-| 415 double free | 89.7% | 6.1% | **+83.6** | working |
-| 563 dead store | 76.9% | 5.3% | **+71.7** | working |
-| 762 mismatched free | 64.0% | 2.1% | **+61.9** | working |
-| 476 null deref | 65.6% | 4.6% | **+61.0** | working |
-| 401 leak | 78.1% | 19.7% | **+58.4** | working |
-| 416 use-after-free | 57.1% | 0.0% | **+57.1** | working |
-| 590 free non-heap | 37.9% | 0.0% | +37.9 | half the cases missed |
-| 457 uninit | 100% | 68.9% | +31.1 | all found; noise buried in low tier (2.8% surfaced) |
-| 124 underwrite | 65.6% | 22.7% | +42.9 | was 53.1% |
-| 127 underread | 46.9% | 18.2% | +28.7 | |
-| 191 underflow | 42.9% | 18.6% | +24.3 | 0% surfaced |
-| 775 fd leak | 12.9% | 0.0% | +12.9 | 13 of 40 units failed to compile |
-| 122 heap overflow | 46.4% | 23.7% | +22.8 | was 35.7% |
-| 126 overread | 18.8% | 14.0% | +4.7 | |
-| 190 overflow | 12.1% | 8.8% | +3.3 | see verdict below |
-| 121 stack overflow | 16.7% | 1.1% | +15.6 | was 2.8%; alpha checkers |
-| 562 stack addr return | 0% | 0% | 0 | only 3 cases sampled |
+| 415 double free | 93.0% | 3.5% | **+89.5** | |
+| 762 mismatched free | 84.8% | 0.0% | **+84.8** | |
+| 476 null deref | 84.1% | 4.5% | **+79.6** | |
+| 563 dead store | 77.3% | 2.3% | **+75.0** | |
+| 401 leak | 86.7% | 17.9% | **+68.8** | |
+| 124 underwrite | 77.8% | 13.7% | **+64.1** | alpha checkers |
+| 416 use-after-free | 51.2% | 0.0% | +51.2 | `--ctu` takes the split cases 0% → 30% |
+| 121 stack overflow | 44.2% | 0.9% | +43.3 | was 2.8%; alpha checkers |
+| 590 free non-heap | 42.2% | 0.0% | +42.2 | |
+| 122 heap overflow | 54.2% | 22.4% | +31.8 | |
+| 127 underread | 42.2% | 11.1% | +31.1 | |
+| 457 uninit | 100% | **74.7%** | +25.3 | all found; the noisiest check here |
+| 191 underflow | 32.0% | 13.6% | +18.4 | |
+| 775 fd leak | 16.3% | 0.9% | +15.4 | dynamic gets 96%; valgrind `--track-fds` |
+| 126 overread | 25.6% | 11.8% | +13.8 | `--ikos` takes it to 86% |
+| 190 overflow | 18.4% | 13.5% | +4.9 | IKOS's job |
+| 562 stack addr return | 0% | 0% | 0 | only 3 cases exist; dynamic gets 100% |
 
 ### CWE-190/191 — settled: this is IKOS's job, not a matcher's
 
