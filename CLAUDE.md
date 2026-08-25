@@ -226,13 +226,13 @@ With `--ctu`, on 25 cases per CWE:
 | 124 | 53% | **73.7%** | +46.6 |
 | 126 | 18.8% | **42.1%** | +22.4 |
 | 127 | 46.9% | 42.1% | +21.8 |
-| 122 | 35.7% | 20.0% | **−10.2** |
+| 122 | 35.7% | 46.4% | +22.8 |
 
 Raw false positives rise to 21.9% and **surfaced false positives are 1.1%** — the tiering absorbs the alpha noise, which is what it is for.
 
 Two things to hold onto:
 
-- **CWE-122 discriminates negatively** at the raw tier: the checkers flag corrected heap cases more often than flawed ones. At the surfaced tier it is +10%. Worth a look before trusting heap-overflow output.
+- **CWE-122 does *not* discriminate negatively** — that reading was small-sample noise and is retracted. At 25 cases it measured −10.2; at 40 it is **+22.8 raw and +25.0 surfaced**, and `--ctu` and a default run give byte-identical numbers for it. **Per-CWE figures below roughly 30 cases can flip a discrimination sign**, so compare only at matched `--limit`, and do not read a single small run as a finding.
 - **`ArrayBoundV2` is mapped medium, not high**, and the distinction is the checker's own. `cstring.OutOfBounds` says "this copy overflows the destination" and has both sizes. `ArrayBoundV2` says "I cannot show this index is in range" — on rtklib_mod it flags `obs[i].L[f]` for `f < rtk->opt.nf`, where the bound holds by an invariant it cannot see. On 10 real translation units it produced 3 findings, not a flood.
 - **It runs without `--ctu` now.** The analyzer pass takes `Option<&CtuIndex>`; with `None` it drops the cross-TU config and runs *only* the three alpha checkers, reporting as `clang-sa-bounds`. Everything else in `CTU_CHECKERS` is already covered by clang-tidy under `clang-analyzer-*`, so running the full set without an index would pay for a second path-sensitive analysis to learn what Kordon already knows. A default run went from 2.8% to 31.6% on the 25-case sample, and the whole-baseline total from 49.1% to 51.5% recall with false positives flat.
 
