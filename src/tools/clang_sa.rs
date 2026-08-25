@@ -37,7 +37,7 @@ pub fn tool(ctu: bool) -> Tool {
 /// `--checks=clang-analyzer-alpha.*` enables them, so this is the only way
 /// they run at all.
 pub const ALPHA_CHECKERS: &str = "alpha.security.ArrayBoundV2,\
-alpha.unix.cstring.OutOfBounds,alpha.unix.cstring.NotNullTerminated";
+alpha.unix.cstring.OutOfBounds";
 
 /// Checkers enabled for the CTU pass.
 ///
@@ -47,8 +47,12 @@ alpha.unix.cstring.OutOfBounds,alpha.unix.cstring.NotNullTerminated";
 /// nothing from CTU and already run in the clang-tidy pass.
 pub const CTU_CHECKERS: &str = "core,cplusplus,unix,deadcode,nullability,\
 optin.cplusplus.UninitializedObject,optin.portability.UnixAPI,\
-alpha.security.ArrayBoundV2,alpha.unix.cstring.OutOfBounds,\
-alpha.unix.cstring.NotNullTerminated";
+alpha.security.ArrayBoundV2,alpha.unix.cstring.OutOfBounds";
+
+// `alpha.unix.cstring.NotNullTerminated` was here and was removed. It never
+// fired: not on Juliet's CWE-170 family, which is nothing but un-terminated
+// `strncpy` results, and not on a hand-written canonical case either. It was
+// added on the strength of its name.
 
 // The three `alpha` checkers are the only way Kordon reaches the stack
 // buffer-overflow class at all. Measured on Juliet CWE-121: the static layer

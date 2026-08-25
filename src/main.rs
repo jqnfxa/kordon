@@ -379,7 +379,10 @@ fn main() -> Result<()> {
     } else {
         runs.push(ToolRun::skipped(
             tools::ikos::tool(),
-            "--ikos not given; nothing was proved safe or unsafe",
+            "--ikos not given; nothing was proved safe or unsafe. It is the only \
+             engine that reaches value-dependent bounds: on Juliet CWE-126 it \
+             takes recall from 17% to 86%, though at a false-positive rate that \
+             keeps its findings in the unproven tier",
         ));
     }
 

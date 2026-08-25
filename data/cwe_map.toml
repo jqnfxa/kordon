@@ -978,12 +978,6 @@ check = "clang-analyzer-alpha.security.ArrayBoundV2"
 cwe = 787
 confidence = "medium"
 
-[[rule]]
-tool = "clang-sa-ctu"
-check = "clang-analyzer-alpha.unix.cstring.NotNullTerminated"
-cwe = 170
-confidence = "medium"
-
 # valgrind --track-fds. No other engine Kordon runs sees this: file descriptors
 # are not allocations, so LeakSanitizer does not track them.
 [[rule]]

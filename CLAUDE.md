@@ -264,6 +264,31 @@ Two things follow:
 - **Recommend `--ctu` for any real run.** It is not a marginal flag; for three defect classes it is the difference between coverage and none.
 - **Never compare CTU on a single-file corpus.** It will read as free cost, which is how the earlier note went wrong.
 
+## CWE-126 — the triage step earning its keep (2026-08-25)
+
+The plan's second step is to name each shape and decide what it needs *before* writing anything. On CWE-126 that decision came within one command of going the wrong way.
+
+The dominant family looks perfectly syntactic:
+
+    memcpy(dest, data, strlen(dest) * sizeof(char));   // length from the DESTINATION
+
+408 files share it, and reading `data` for `strlen(dest)` bytes is exactly the over-read. It is the mirror of the CWE-806 shape (`strncpy(dest, data, strlen(data))`), which is a real defect, so a matcher looked obvious.
+
+**The corrected function contains the identical line.** `goodG2B` differs only in `data = dataGoodBuffer` (100 bytes) instead of `data = dataBadBuffer` (50). The copy call is character-for-character the same. Any matcher on that shape fires on both and discriminates exactly zero — the verdict is **value-range, not syntactic**, and only comparing against the corrected variant reveals it.
+
+**IKOS handles it, precisely.** On the flawed variant: *"possible buffer overflow, pointer 'data' accesses up to 99 bytes at offset 0 bytes of local variable 'dataBadBuffer' of size 50 bytes"*. On the corrected one: SAFE.
+
+| CWE-126 | recall | FP | discrim |
+|---|---|---|---|
+| default | 17.2% | 8.1% | +9.1 |
+| `--ikos` | **86.2%** | 44.6% | **+41.6** |
+
+Five times the recall, and the best discrimination measured for this CWE — but at a 44.6% false-positive rate, which is why those findings belong where Kordon already puts them: the **unproven** tier, counted and summarized, listed on `--show-unproven`. Reporting them at medium would put a coin-flip beside a proof. The gap is not the classification, it is that nothing told the user what `--ikos` is worth; the skip message now says so.
+
+**`alpha.unix.cstring.NotNullTerminated` was removed.** It never fired — not on Juliet's CWE-170 family, which is 108 files of nothing but un-terminated `strncpy` results, and not on a hand-written canonical case. It was added on the strength of its name, which is exactly the mistake this file exists to stop.
+
+**Scorer fix, and it moved the numbers:** the truth extractor only recognised functions ending in `_bad`, so it missed `..._54e_badSink` and the whole multi-file naming. Classifying on the substring instead raised the flawed-function count per CWE (CWE-121: 36 to 43). Baselines taken before this are not comparable to ones taken after.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
@@ -308,7 +333,7 @@ verdict in the table so the next session starts where this one stopped.
 |---|---|---|---|---|
 | 1 | 190/191 overflow | 12%/43% | **IKOS's job, not a matcher's** | **done — see verdict above** |
 | 2 | 121 stack overflow | 2.8% -> 31.6% with --ctu | alpha checkers, reachable only via --ctu | **done** |
-| 3 | 126 overread | 18.8% | probably same shape as 121 | not started |
+| 3 | 126 overread | 17% -> 86% with --ikos | value-range, not syntactic | **done** |
 | 4 | 775 fd leak | 0% -> 96% dynamic | valgrind --track-fds | **done** |
 | 5 | 122 heap overflow | 35.7% | triage first | not started |
 | 6 | 590 free non-heap | 37.9% | triage first | not started |
