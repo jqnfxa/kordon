@@ -360,6 +360,24 @@ Filed under CWE-119 it made the bounds count mean "out of range **or** merely wr
 
 **The pattern, now three times:** `init-variables`, `pro-bounds-pointer-arithmetic`, `pro-bounds-constant-array-index`. A guideline check mapped to a defect CWE inflates that CWE's raw recall *and* its false positives, and the surfaced report never sees either. **When a CWE's false-positive rate is the outlier, look for a guideline check in its accept set before suspecting the detectors.**
 
+## Why recall is not 100% — the misses, bucketed (2026-08-25)
+
+`scripts/explain-misses.py <dir> <cwe> <n>` groups every flawed function by the shape Juliet declares in its header (`BadSource:` / `BadSink :`) and prints the detection rate per shape. That pairing, not the CWE, is what decides whether any engine can see a defect. **Six causes account for essentially every miss, and only one of them is a gap in Kordon rather than a property of the problem.**
+
+**1. The length is a runtime string length.** The largest bucket. `memcpy(dest, data, wcslen(data)*sizeof(wchar_t))` with `dest[50]` and `data` holding 99 characters — the bound is not a constant, so nothing syntactic can compare it to the destination. Default engines: 0%. IKOS: reports it (`potentially UNSAFE`). ASan: catches it. This is the value-range class, and the answer already exists in `--ikos` and the dynamic layer.
+
+**2. Hand-written copy loops.** `alpha.unix.cstring.OutOfBounds` models known string functions only. "Copy data to string using a loop" is 0/4, 0/3, 0/2 wherever it appears, while the same defect through `memcpy` is 100%.
+
+**3. Concatenation.** `strcat`, `wcscat`, `strncat` need the destination's *current* length, not its capacity. Consistently 0%.
+
+**4. The value comes from outside the program.** `rand`, `fgets`, `fscanf`, `connect_socket`. Not a limitation to fix — the value genuinely is not knowable statically. The honest outputs are IKOS's "cannot prove safe" and the dynamic layer, which catches 57-100% of these at 0% false positives.
+
+**5. The defect is in another translation unit.** Measured separately: `--ctu` takes the split cases from 17.4% to 28.8%.
+
+**6. The function labelled flawed contains no defect.** Juliet marks `..._bad()` as flawed even when it only calls `helperBad()`, and a detector reports at the flaw rather than the call. For CWE-562 this alone caps recall at 50% — 3 of its 6 flawed functions are wrappers.
+
+**So 100% is not the target, and a per-layer number read alone is misleading.** The clearest case is CWE-122: the static layer scores 29.2%, and the shapes it misses — runtime lengths, loops, concatenation — are exactly the ones ASan catches, at **85.7% of runnable cases with zero false positives**. The layers are complementary by construction, which is the argument for running both and the reason both baselines are kept.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
