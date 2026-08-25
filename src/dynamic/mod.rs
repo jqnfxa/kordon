@@ -106,6 +106,10 @@ pub const VALGRIND: Profile = Profile {
         "valgrind",
         "--leak-check=full",
         "--track-origins=yes",
+        // File descriptors are not memory. Without this, an unclosed fopen or
+        // open is invisible to every engine Kordon runs -- LeakSanitizer
+        // tracks allocations only -- and CWE-775 measured 0%.
+        "--track-fds=yes",
         "--error-exitcode=0",
         "--xml=yes",
         // Without this, wrapping a test harness traces the *harness* and

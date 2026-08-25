@@ -37,6 +37,10 @@ pub fn parse(xml: &str) -> Vec<RuntimeReport> {
     let mut buf = Vec::new();
 
     let mut in_error = false;
+    // A `--track-fds` report is a bare <stack> with no <error> around it and no
+    // <kind> inside it, emitted after <status>FINISHED</status>. Nothing else
+    // in valgrind's XML has that shape, so an unwrapped stack is the signal.
+    let mut in_loose_stack = false;
     let mut stack_index = 0usize;
     let mut in_frame = false;
     let mut kind = String::new();
@@ -60,7 +64,11 @@ pub fn parse(xml: &str) -> Vec<RuntimeReport> {
                         frames.clear();
                     }
                     "stack" if in_error => stack_index += 1,
-                    "frame" if in_error && stack_index == 1 => {
+                    "stack" => {
+                        in_loose_stack = true;
+                        frames.clear();
+                    }
+                    "frame" if (in_error && stack_index == 1) || in_loose_stack => {
                         in_frame = true;
                         fun.clear();
                         dir.clear();
@@ -106,6 +114,21 @@ pub fn parse(xml: &str) -> Vec<RuntimeReport> {
                                 file: path,
                                 line,
                                 column: 0,
+                            });
+                        }
+                    }
+                    "stack" if in_loose_stack => {
+                        in_loose_stack = false;
+                        // File descriptors are not memory, so no other engine
+                        // Kordon runs reports this: LeakSanitizer tracks
+                        // allocations only, and CWE-775 scored zero under ASan
+                        // for that reason alone.
+                        if !frames.is_empty() {
+                            out.push(RuntimeReport {
+                                engine: "valgrind".to_string(),
+                                class: "open-file-descriptor".to_string(),
+                                message: "file descriptor still open at exit".to_string(),
+                                frames: std::mem::take(&mut frames),
                             });
                         }
                     }
@@ -195,5 +218,29 @@ mod tests {
         // Memory alive at exit with a pointer still held is the normal state
         // of any program with a singleton. Reporting it buries the real leaks.
         assert!(parse(XML).iter().all(|r| r.class != "Leak_StillReachable"));
+    }
+
+    /// `--track-fds` reports leak a descriptor without an <error> wrapper.
+    ///
+    /// Verbatim shape from valgrind 3.22: a bare <stack> after
+    /// <status>FINISHED</status>, with no <kind> and no <what>. Requiring an
+    /// <error> envelope -- which every other valgrind report has -- meant an
+    /// unclosed file descriptor parsed to nothing, and CWE-775 measured 0%.
+    #[test]
+    fn a_leaked_file_descriptor_has_no_error_envelope() {
+        let xml = "\
+<valgrindoutput>
+<status><state>FINISHED</state></status>
+  <stack>
+    <frame><ip>0x1</ip><obj>/tmp/fd1</obj><fn>open</fn>
+      <dir>/usr/include</dir><file>open64.c</file><line>41</line></frame>
+    <frame><ip>0x2</ip><obj>/tmp/fd1</obj><fn>bad</fn>
+      <dir>/src</dir><file>case.c</file><line>36</line></frame>
+  </stack>
+</valgrindoutput>";
+        let reports = parse(xml);
+        assert_eq!(reports.len(), 1, "a bare stack is the fd report");
+        assert_eq!(reports[0].class, "open-file-descriptor");
+        assert_eq!(reports[0].frames[0].line, 41);
     }
 }

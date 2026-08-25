@@ -164,6 +164,11 @@ id = 772
 name = "Missing Release of Resource after Effective Lifetime"
 tier = 1
 
+[[cwe]]
+id = 775
+name = "Missing Release of File Descriptor or Handle after Effective Lifetime"
+tier = 1
+
 # Null deref and the fallible-init chain (see CLAUDE.md)
 [[cwe]]
 id = 252
@@ -951,6 +956,14 @@ tool = "clang-tidy"
 check = "clang-diagnostic-unused-variable"
 cwe = 563
 confidence = "medium"
+
+# valgrind --track-fds. No other engine Kordon runs sees this: file descriptors
+# are not allocations, so LeakSanitizer does not track them.
+[[rule]]
+tool = "valgrind"
+check = "open-file-descriptor"
+cwe = 775
+confidence = "high"
 
 [[rule]]
 tool = "kordon-query"

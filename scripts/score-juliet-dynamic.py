@@ -67,6 +67,15 @@ PROFILES = {
         "env": {"MSAN_OPTIONS": "exitcode=0:symbolize=0"},
         "wrapper": [],
     },
+    # File descriptors are not memory: LeakSanitizer does not track them at
+    # all, and CWE-775 scored 0% under ASan for that reason alone. valgrind
+    # does, given --track-fds.
+    "valgrind-fds": {
+        "cc": "clang",
+        "flags": ["-g", "-O0"],
+        "env": {},
+        "wrapper": ["valgrind", "--track-fds=yes", "-q"],
+    },
     "valgrind": {
         "cc": "clang",
         "flags": ["-g", "-O0"],
@@ -82,7 +91,7 @@ DEFAULT_PROFILE = {
     121: "asan", 122: "asan", 124: "asan", 126: "asan", 127: "asan",
     190: "asan", 191: "asan",          # UBSan rides along in the asan build
     401: "asan", 415: "asan", 416: "asan", 590: "asan", 762: "asan",
-    775: "asan", 562: "asan",
+    775: "valgrind-fds", 562: "asan",
     457: "msan",
 }
 
@@ -102,6 +111,21 @@ REPORT_RE = re.compile(
 # leaks, and LeakSanitizer correctly reports a real leak in a function labelled
 # good for a different defect. Crediting or charging a report of the wrong
 # class measures the wrong thing in both directions.
+def _fd_leaked(text):
+    """True when more descriptors were open at exit than the three standard ones.
+
+    valgrind prints `FILE DESCRIPTORS: 4 open (3 std) at exit.` and lists each
+    one. It is not an error in valgrind's sense -- the exit code stays 0 -- so
+    there is no banner to match and nothing for --error-exitcode to catch; the
+    count is the whole signal.
+    """
+    m = re.search(r"FILE DESCRIPTORS: (\d+) open \((\d+) std\)", text)
+    if m:
+        return int(m.group(1)) > int(m.group(2))
+    m = re.search(r"FILE DESCRIPTORS: (\d+) open", text)
+    return bool(m) and int(m.group(1)) > 3
+
+
 CLASS_RE = {
     121: r"stack-buffer-overflow|dynamic-stack-buffer-overflow|stack-buffer-underflow",
     122: r"heap-buffer-overflow",
@@ -117,7 +141,7 @@ CLASS_RE = {
     562: r"stack-use-after-return|stack-use-after-scope",
     590: r"bad-free|attempting free on address which was not malloc",
     762: r"alloc-dealloc-mismatch|bad-free|new-delete-type-mismatch",
-    775: r"LeakSanitizer|detected memory leaks",
+    775: _fd_leaked,
 }
 
 
@@ -128,8 +152,18 @@ def sample(base, limit):
             if not n.endswith((".c", ".cpp")):
                 continue
             # Multi-file cases need every part linked; skip rather than
-            # half-build them.
+            # half-build them. Both spellings: `_54b.c` splits by letter, and
+            # the 81-84 class variants split as `_82_bad.cpp` /
+            # `_84_goodB2G.cpp`, which have no main() of their own.
             if re.search(r"_\d+[a-e]\.(c|cpp)$", n):
+                continue
+            if re.search(r"_\d+_(bad|good\w*)\.(c|cpp)$", n):
+                continue
+            # Windows-only cases. `w32CreateFile`, `w32*Thread` and friends
+            # cannot build on this platform, and counting them as unbuilt
+            # reports a gap in Kordon where the gap is in the test suite's
+            # portability -- 8 of 25 CWE-775 cases are these.
+            if "w32" in n or "wchar_t_w32" in n:
                 continue
             files.append(os.path.join(dirpath, n))
     files.sort()
@@ -170,14 +204,14 @@ def build_and_run(src, support, prof, side, repeats, timeout, workdir, want):
                 partial = (e.stdout or b"") + (e.stderr or b"")
                 if isinstance(partial, bytes):
                     partial = partial.decode("utf-8", "replace")
-                if REPORT_RE.search(partial) and want.search(partial):
+                if want(partial):
                     return "caught"
                 # No retry otherwise. A case that blocks blocks every time --
                 # `listen_socket` waits on accept() for a peer that never comes.
                 saw_timeout = True
                 break
             blob = (run.stdout or "") + (run.stderr or "")
-            if (REPORT_RE.search(blob) and want.search(blob)) or run.returncode == 42:
+            if want(blob):
                 return "caught"
     finally:
         if os.path.exists(exe):
@@ -223,7 +257,14 @@ def main():
             continue
 
         with tempfile.TemporaryDirectory() as work:
-            want = re.compile(CLASS_RE.get(cwe, r".") , re.I)
+            spec_cls = CLASS_RE.get(cwe, r".")
+            if callable(spec_cls):
+                want = spec_cls
+            else:
+                rx = re.compile(spec_cls, re.I)
+                # Both must hold: a sanitizer said something, and what it said
+                # is the class under test.
+                want = lambda t, rx=rx: bool(REPORT_RE.search(t) and rx.search(t))
 
             def score(src):
                 return (build_and_run(src, support, prof, "bad",
