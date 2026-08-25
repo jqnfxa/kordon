@@ -102,9 +102,9 @@
  "457": {
   "files": 40,
   "bad_total": 40,
-  "bad_found": 40,
+  "bad_found": 23,
   "good_total": 170,
-  "good_flagged": 127,
+  "good_flagged": 8,
   "bad_found_surfaced": 23,
   "good_flagged_surfaced": 8,
   "failed_units": null

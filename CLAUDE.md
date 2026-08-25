@@ -113,7 +113,7 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-**Baseline, 40 files per CWE, default flags: 57.0% recall at 12.7% false positives — 45.1% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
+**Baseline, 40 files per CWE, default flags: 54.6% recall at 7.5% false positives — 45.1% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
 
 Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
@@ -130,7 +130,7 @@ Read the **discrimination** column (recall − FP), not recall. A check that fir
 | 590 free non-heap | 42.2% | 0.0% | +42.2 | |
 | 122 heap overflow | 54.2% | 22.4% | +31.8 | |
 | 127 underread | 42.2% | 11.1% | +31.1 | |
-| 457 uninit | 100% | **74.7%** | +25.3 | all found; the noisiest check here |
+| 457 uninit | 57.5% | 4.7% | **+52.8** | now means *reads* of uninitialised values |
 | 191 underflow | 32.0% | 13.6% | +18.4 | |
 | 775 fd leak | 16.3% | 0.9% | +15.4 | dynamic gets 96%; valgrind `--track-fds` |
 | 126 overread | 25.6% | 11.8% | +13.8 | `--ikos` takes it to 86% |
@@ -289,20 +289,22 @@ Five times the recall, and the best discrimination measured for this CWE — but
 
 **Scorer fix, and it moved the numbers:** the truth extractor only recognised functions ending in `_bad`, so it missed `..._54e_badSink` and the whole multi-file naming. Classifying on the substring instead raised the flawed-function count per CWE (CWE-121: 36 to 43). Baselines taken before this are not comparable to ones taken after.
 
-## CWE-457's false positives are load-bearing (2026-08-25)
+## CWE-457: the guideline and the defect are different questions (2026-08-25)
 
-`cppcoreguidelines-init-variables` flags every declaration without an initialiser, so on CWE-457 it reports **127 of 170 correct functions** — a 74.7% false-positive rate, the worst of any check Kordon runs, and the entirety of that CWE's noise. It looks like the obvious next thing to delete.
+`cppcoreguidelines-init-variables` reported **127 of 170 correct functions** on CWE-457 — the worst false-positive rate of any check here, and the entirety of that CWE's noise. Two wrong conclusions were available and both were avoided by measuring.
 
-Measured both ways first:
+**It is not a check to delete.** Removing it takes recall from 100% to 57.5% and discrimination from +25.3 to +52.8, which reads as an improvement until the surfaced columns are compared: **57.5% recall at 4.7% false positives, identical either way**, because it is low-confidence and never reaches the detailed report. It costs a reader nothing, and it is the only thing that finds 17 of those 40 flawed functions. Contrast `cppcoreguidelines-pro-bounds-array-to-pointer-decay`, removed earlier for having *zero* exclusive coverage. **A high false-positive rate is not by itself grounds for removal; the questions are what a check finds that nothing else does, and whether its noise reaches the reader.**
 
-| | recall | FP | discrim | **surfaced recall** | **surfaced FP** |
-|---|---|---|---|---|---|
-| with it | 100% | 74.7% | +25.3 | **57.5%** | **4.7%** |
-| without it | 57.5% | 4.7% | +52.8 | **57.5%** | **4.7%** |
+**It was, however, filed under the wrong CWE.** The check implements the *guideline* — "always initialise an object", so every declaration without an initialiser is a violation. CWE-457 is the *defect*: a value read before it was ever assigned. `int data; data = 5; use(data);` violates the first and is not an instance of the second, and Juliet's corrected functions are full of exactly that. Filed under 457 the count meant two things at once.
 
-Removing it doubles discrimination, which reads as an improvement until the surfaced columns are compared: **identical**. The check is low-confidence, so it never reaches the detailed report either way — it costs a reader nothing. And it is the only thing that finds 17 of those 40 flawed functions.
+It now maps to **CWE-398, tier 0** — a code-quality indicator, not a defect class Kordon claims — so it is counted out of scope rather than inflating a defect count. The path-sensitive `clang-analyzer-core.uninitialized.*` checkers still carry CWE-457, and that number now means reads of uninitialised values and nothing else:
 
-Keep it. This is the opposite of `cppcoreguidelines-pro-bounds-array-to-pointer-decay`, which was removed for having *zero* exclusive coverage. **A high false-positive rate is not by itself a reason to remove a check; the questions are what it finds that nothing else does, and whether its noise reaches the reader.**
+| | recall | FP | discrim |
+|---|---|---|---|
+| CWE-457 before | 100% | 74.7% | +25.3 |
+| CWE-457 after | 57.5% | 4.7% | **+52.8** |
+
+Whole-baseline effect: raw false positives **12.7% → 7.5%**, raw recall 57.0% → 54.6%, **surfaced numbers unchanged** at 45.1% / 1.6%. No detection was lost — the check still runs and still reports; it is no longer *credited* with finding a defect class it was not finding.
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 

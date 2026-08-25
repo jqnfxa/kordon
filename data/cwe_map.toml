@@ -711,10 +711,22 @@ check = "cppcoreguidelines-owning-memory"
 cwe = 401
 confidence = "low"
 
+# 398, not 457, and the distinction is the point. This check implements the
+# guideline ("always initialise an object"), which flags every declaration
+# without an initialiser. CWE-457 is the *defect*: a value read before it was
+# ever assigned. `int data; data = 5; use(data);` violates the first and is not
+# an instance of the second, and Juliet's corrected functions are full of
+# exactly that -- it reported 127 of 170 correct functions there.
+#
+# Filed under 457 it made that CWE's count mean two different things at once.
+# Tier 0 says what it is: a code-quality indicator, not a defect class Kordon
+# claims. The path-sensitive `clang-analyzer-core.uninitialized.*` checkers
+# still carry CWE-457, and now that count means reads of uninitialised values
+# and nothing else.
 [[rule]]
 tool = "clang-tidy"
 check = "cppcoreguidelines-init-variables"
-cwe = 457
+cwe = 398
 confidence = "low"
 
 [[rule]]
