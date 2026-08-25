@@ -306,6 +306,21 @@ It now maps to **CWE-398, tier 0** — a code-quality indicator, not a defect cl
 
 Whole-baseline effect: raw false positives **12.7% → 7.5%**, raw recall 57.0% → 54.6%, **surfaced numbers unchanged** at 45.1% / 1.6%. No detection was lost — the check still runs and still reports; it is no longer *credited* with finding a defect class it was not finding.
 
+## Every check, scored on one question (2026-08-25)
+
+`scripts/score-juliet.py --by-check` drops the per-CWE question and asks each native check only this: **how much more often does it land in a flawed function than in a corrected one?** A check that fires equally on both implements a guideline rather than detecting a defect, whatever its name says. Output kept in `data/juliet-by-check.txt`.
+
+Run over 465 flawed and 1448 correct functions, restricted to checks that reach an **in-scope** CWE and land in 10 or more functions:
+
+**Every in-scope check discriminates positively.** Nothing Kordon reports as a defect fires more on correct code than on flawed code. That is the configuration health check this table exists for, and it is the first time it has been run.
+
+The strongest are the ones with a zero good-side: `unix.MismatchedDeallocator` (23/0), `alpha.security.ArrayBoundV2` (17/0), `autovarInvalidDeallocation` (13/0), `doubleFree` (12/0), `invalidLifetime` (11/0), `pointerOutOfBounds` (10/0). The weakest at high confidence is `core.NonNullParamChecker` (5 flawed, 15 correct, +0.0%).
+
+**Two limits, and the second is the sharper one:**
+
+- **Small counts say nothing.** A check landing in two functions can show any discrimination at all; that is how the CWE-122 claim went wrong. The table drops anything under 10.
+- **The good side is weaker evidence than a per-CWE score.** A function labelled `good` is only correct *with respect to its own CWE* — Juliet's CWE-416 `goodG2B` deliberately leaks, and LeakSanitizer is right to say so. On top of that, this mode compiles both halves into one translation unit and attributes findings by line range. `NonNullParamChecker`'s 15 good-side hits do not reproduce at all when the corrected half is compiled alone, so they are not yet evidence of anything. **Treat this table as a ranking, and confirm anything actionable per-CWE.**
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the

@@ -171,6 +171,12 @@ def main():
                     help="max test files per CWE (the suite has thousands)")
     ap.add_argument("--jobs", type=int, default=20)
     ap.add_argument("--json-out", help="write the raw per-CWE result here")
+    ap.add_argument("--by-check", action="store_true",
+                    help="ignore the per-CWE question and score every native "
+                         "check on one thing: how much more often it lands in a "
+                         "flawed function than in a corrected one. A check that "
+                         "fires equally on both implements a guideline rather "
+                         "than detecting a defect, whatever its name says.")
     ap.add_argument("--multifile", action="store_true",
                     help="score ONLY the cases split across translation units "
                          "(_54a.._54e, _81.._84). The defect sits in a sink "
@@ -192,6 +198,7 @@ def main():
               if not args.cwe or c in args.cwe}
 
     results = {}
+    by_check, all_bad_g, all_good_g = {}, set(), set()
     for dirname, cwe in sorted(wanted.items(), key=lambda kv: kv[1]):
         base = os.path.join(testcases, dirname)
         if not os.path.isdir(base):
@@ -270,6 +277,33 @@ def main():
                 print(proc.stderr[-400:], file=sys.stderr)
                 continue
 
+        if args.by_check:
+            for f in report.get("findings", []):
+                path, line = os.path.realpath(f["file"]), f["line"]
+                for name, start, end in truth.get(path, []):
+                    if not (start <= line <= end):
+                        continue
+                    side = classify(name)
+                    for nid in f.get("native_ids") or ["<unmapped>"]:
+                        e = by_check.setdefault(
+                            nid, {"bad": set(), "good": set(),
+                                  "conf": f.get("confidence"),
+                                  "cwe": f.get("cwe"),
+                                  "in_scope": False})
+                        # A check reaching an in-scope CWE is one whose noise
+                        # lands in the defect count; a tier-0 one is already
+                        # filed as a code-quality indicator.
+                        e["in_scope"] = e["in_scope"] or bool(f.get("in_scope"))
+                        if f.get("in_scope"):
+                            e["cwe"] = f.get("cwe")
+                            e["conf"] = f.get("confidence")
+                        e[side].add((path, name))
+            # Denominators are shared across checks, so accumulate globally.
+            for p_, rs in truth.items():
+                for n_, _, _ in rs:
+                    (all_bad_g if classify(n_) == "bad" else all_good_g).add((p_, n_))
+            continue
+
         accept = EQUIVALENT.get(cwe, {cwe})
         # Scored twice: over everything, and over the tiers the report details
         # by default. Kordon counts low-confidence risk patterns but does not
@@ -325,6 +359,31 @@ def main():
               f"{r['good_flagged']}/{r['good_total']} good]")
         if r["failed_units"]:
             print(f"          ! {r['failed_units']}")
+
+    if args.by_check:
+        nb, ng = len(all_bad_g), len(all_good_g)
+        print(f"\nPer-check discrimination over {nb} flawed and {ng} correct "
+              f"functions.\nA check near 0 fires on correct code as often as on "
+              f"flawed code.\n")
+        print(f"{'check':<48}{'cwe':>6}{'conf':<9}{'bad':>10}{'good':>11}{'discrim':>9}")
+        rows = []
+        for nid, e in by_check.items():
+            nbad, ngood = len(e["bad"]), len(e["good"])
+            b = 100.0 * nbad / nb if nb else 0.0
+            g = 100.0 * ngood / ng if ng else 0.0
+            rows.append((b - g, nid, e, b, g, nbad, ngood))
+        for d, nid, e, b, g, nbad, ngood in sorted(rows, key=lambda r: -r[0]):
+            # Raw counts alongside the rates: a check firing on two functions
+            # can show any discrimination at all, and reading that as a result
+            # is how the CWE-122 claim went wrong.
+            if nbad + ngood < 10 or not e["in_scope"]:
+                continue
+            print(f"{nid[:47]:<48}{str(e['cwe']):>6}{'':<1}{str(e['conf']):<8}"
+                  f"{nbad:4d} ({b:4.1f}%){ngood:5d} ({g:4.1f}%){d:+8.1f}%")
+        print("\nIn-scope checks only, and only those landing in 10+ functions. "
+              "Tier-0 checks\nare excluded: their noise is already filed as a "
+              "code-quality indicator.")
+        return
 
     if results:
         tb = sum(r["bad_total"] for r in results.values())
