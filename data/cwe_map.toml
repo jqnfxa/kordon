@@ -735,16 +735,31 @@ check = "cppcoreguidelines-narrowing-conversions"
 cwe = 197
 confidence = "low"
 
+# Both of these are guidelines, not defect detectors, and belong at tier 0 for
+# the same reason cppcoreguidelines-init-variables does.
+#
+# `pro-bounds-pointer-arithmetic` flags *all* pointer arithmetic -- `p[i]`,
+# `p + 1` -- because the guideline is to use a span instead. It never claims an
+# access is out of range. Filed under CWE-119 it was 25 of CWE-122's 116
+# correct functions, essentially that CWE's entire 22.4% false-positive rate,
+# and it made the bounds count mean "out of range or merely written with a
+# pointer".
+#
+# `pro-bounds-constant-array-index` is the same shape: every non-constant
+# index, whatever its range.
+#
+# Both stay enabled. Like init-variables they are low-confidence, so they never
+# reach the detailed report, and the tier-0 CWE says what they are.
 [[rule]]
 tool = "clang-tidy"
 check = "cppcoreguidelines-pro-bounds-constant-array-index"
-cwe = 129
+cwe = 398
 confidence = "low"
 
 [[rule]]
 tool = "clang-tidy"
 check = "cppcoreguidelines-pro-bounds-pointer-arithmetic"
-cwe = 119
+cwe = 398
 confidence = "low"
 
 # Off by default since 2026-08-20 -- 622 findings on the reference corpus, none
@@ -972,10 +987,26 @@ confidence = "medium"
 # Clang SA alpha checkers, reachable only through the --ctu pass. They cover
 # the library-call bounds shapes -- memcpy/strcpy past the end of the
 # destination -- that no other engine here sees.
+# This checker covers both directions and says which in its message, so the
+# id follows the message rather than defaulting to the write. Mapping it all
+# to 787 filed every buffer *under*read as an out-of-bounds *write*, which is
+# a different defect -- and made CWE-127 look worse than it was, because a
+# 787 does not answer a question about reads.
 [[rule]]
 tool = "clang-sa-ctu"
 check = "clang-analyzer-alpha.unix.cstring.OutOfBounds"
+message_contains = "overflows the destination"
 cwe = 787
+confidence = "high"
+
+# "accesses out-of-bound array element" -- observed on memcpy *source*
+# overruns, i.e. reads. 125 rather than 119: the parent would be safe and
+# uninformative, and this file's own rule is not to default to 119 for every
+# bad access.
+[[rule]]
+tool = "clang-sa-ctu"
+check = "clang-analyzer-alpha.unix.cstring.OutOfBounds"
+cwe = 125
 confidence = "high"
 
 # Medium, not high, and the distinction is the checker's own. cstring.OutOfBounds

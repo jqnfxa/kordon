@@ -113,7 +113,7 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-**Baseline, 40 files per CWE, default flags: 54.7% recall at 7.6% false positives — 45.3% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
+**Baseline, 40 files per CWE, default flags: 50.9% recall at 4.6% false positives — 46.4% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
 
 Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
@@ -124,16 +124,16 @@ Read the **discrimination** column (recall − FP), not recall. A check that fir
 | 476 null deref | 84.1% | 4.5% | **+79.6** | |
 | 563 dead store | 77.3% | 2.3% | **+75.0** | |
 | 401 leak | 86.7% | 17.9% | **+68.8** | |
-| 124 underwrite | 77.8% | 13.7% | **+64.1** | alpha checkers |
+| 124 underwrite | 71.1% | 1.7% | **+69.4** | alpha checkers |
 | 416 use-after-free | 51.2% | 0.0% | +51.2 | `--ctu` takes the split cases 0% → 30% |
-| 121 stack overflow | 44.2% | 0.9% | +43.3 | was 2.8%; alpha checkers |
+| 121 stack overflow | 40.9% | 0.0% | +40.9 | was 2.8%; alpha checkers |
 | 590 free non-heap | 42.2% | 0.0% | +42.2 | |
-| 122 heap overflow | 54.2% | 22.4% | +31.8 | |
-| 127 underread | 42.2% | 11.1% | +31.1 | |
+| 122 heap overflow | 29.2% | 0.0% | +29.2 | was 22.4% FP |
+| 127 underread | 40.0% | 0.0% | +40.0 | surfaced doubled |
 | 457 uninit | 57.5% | 4.7% | **+52.8** | now means *reads* of uninitialised values |
 | 191 underflow | 32.0% | 13.6% | +18.4 | |
 | 775 fd leak | 16.3% | 0.9% | +15.4 | dynamic gets 96%; valgrind `--track-fds` |
-| 126 overread | 25.6% | 11.8% | +13.8 | `--ikos` takes it to 86% |
+| 126 overread | 2.3% | 0.0% | +2.3 | `--ikos` takes it to 86% |
 | 190 overflow | 18.4% | 13.5% | +4.9 | IKOS's job |
 | 562 stack addr return | 50.0% | 0.0% | +50.0 | was 0%; see below |
 
@@ -332,6 +332,33 @@ The only complete hole left in the static baseline. Both causes were bookkeeping
 Matching any definition and gating on the name instead lifted CWE-562 from 0% to **50% at 0% false positives**. That is also the ceiling here: of the 6 functions Juliet labels flawed, only 3 contain a defect — the others are wrappers that call `helperBad()`, and a detector reports at the flaw, not the call.
 
 **Fourth scorer bug in this file, and they share a shape:** every one was a pattern that looked exhaustive and silently matched less than it claimed — `_bad` missing `_badSink`, lowercase `bad` missing `helperBad`, a sorted prefix standing in for a sample, a return-type list missing `const`. Each read as a Kordon gap. **When a CWE reads 0%, check the instrument before the tool.**
+
+## CWE-127 and CWE-122 (2026-08-25)
+
+Two fixes, and neither was a missing detection.
+
+### CWE-127 — an out-of-bounds *read* was being filed as a *write*
+
+`alpha.unix.cstring.OutOfBounds` covers both directions and says which in its message:
+
+- `"Memory copy function overflows the destination buffer"` — a write
+- `"Memory copy function accesses out-of-bound array element"` — a read, observed on `memcpy` *source* overruns
+
+It was mapped wholesale to **CWE-787**, so every buffer under-read was filed as an out-of-bounds write. A question about reads could not be answered by a 787. Splitting on the message — 787 for the write text, **125** for the read — took CWE-127's *surfaced* recall from 20.0% to **40.0%**, and left CWE-121 untouched, since writes still map where they did.
+
+The dominant CWE-127 shape (`data = dataBuffer - 8;`) was already caught, by cppcheck's `pointerOutOfBounds` and the alpha checker. Nothing needed building.
+
+### CWE-122 — its false positives were a guideline check in a defect CWE
+
+CWE-122 had the worst false-positive rate of any CWE, 22.4%, and it was almost entirely `cppcoreguidelines-pro-bounds-pointer-arithmetic`: 25 of 116 correct functions. That check flags **all** pointer arithmetic — `p[i]`, `p + 1` — because the guideline is to use a span. It never claims an access is out of range.
+
+Filed under CWE-119 it made the bounds count mean "out of range **or** merely written with a pointer". Both `pro-bounds-*` checks now map to **CWE-398, tier 0**, exactly as `init-variables` did, and stay enabled.
+
+**Every surfaced number is unchanged** — 121 at 40.9%, 122 at 29.2%, 126 at 2.3%, 127 at 40.0% — because these checks are low-confidence and never reach the report. What moved is the raw count, which now means what it says. Whole baseline: raw false positives **7.6% → 4.6%**, and surfaced recall **45.1% → 46.4%** from the CWE-127 split.
+
+**It also deflated a number I had believed.** CWE-126's 25.6% was mostly `pro-bounds` noise correlating with flawed code; its real detection was 2.3% all along. That matches the earlier finding that its shape needs value analysis — `--ikos` still takes it to 86%.
+
+**The pattern, now three times:** `init-variables`, `pro-bounds-pointer-arithmetic`, `pro-bounds-constant-array-index`. A guideline check mapped to a defect CWE inflates that CWE's raw recall *and* its false positives, and the surfaced report never sees either. **When a CWE's false-positive rate is the outlier, look for a guideline check in its accept set before suspecting the detectors.**
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 
