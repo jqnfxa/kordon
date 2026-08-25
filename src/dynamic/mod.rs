@@ -625,20 +625,18 @@ fn execute(
         Ok(o) => o,
         Err(e) => return ToolRun::failed(tool(profile), format!("could not run command: {e}")),
     };
-    if output.status.code() == Some(124) {
-        return ToolRun::failed(
-            tool(profile),
-            format!(
-                "timed out after {}s -- nothing it would have found is in this report",
-                config.timeout_secs
-            ),
-        );
-    }
+    let timed_out = output.status.code() == Some(124);
 
     // Both streams, deliberately. A sanitizer writes to the *child's* stderr,
     // but a test harness in between captures that and re-prints it on its own
     // stdout -- `ctest --output-on-failure` does exactly this. Reading stderr
     // alone finds nothing and looks indistinguishable from a clean run.
+    //
+    // Read before the deadline is considered, because a killed run has usually
+    // already said what it found. ASan on this host prints its whole report and
+    // then hangs symbolizing it: `symbolize=0` returns in 5ms, the default
+    // never returns. Discarding the output on timeout threw away a
+    // stack-buffer-overflow the sanitizer had already located.
     let mut combined = String::from_utf8_lossy(&output.stderr).into_owned();
     combined.push('\n');
     combined.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -665,11 +663,43 @@ fn execute(
         .filter_map(|r| r.into_finding(analysis_root, profile.name, table))
         .collect();
 
+    // A deadline with nothing salvaged is still a failure: the run stopped
+    // early, so "no defect observed" would be a claim about a command that did
+    // not finish.
+    if timed_out && findings.is_empty() {
+        // Killed with nothing usable. Say whether it had already named a
+        // defect: a report with no frames under it cannot become a finding,
+        // but "ASan reported a stack-buffer-overflow" is worth far more than
+        // silence, and silence here is indistinguishable from a clean run.
+        let named = sanitizer::classes_named(&combined);
+        let detail = if named.is_empty() {
+            format!(
+                "timed out after {}s -- nothing it would have found is in this report",
+                config.timeout_secs
+            )
+        } else {
+            format!(
+                "timed out after {}s having already reported {} -- killed before it \
+could symbolize, so there is no location to report and the finding is absent",
+                config.timeout_secs,
+                named.join(", ")
+            )
+        };
+        return ToolRun::failed(tool(profile), detail);
+    }
+
     let mut notes = Vec::new();
     // Say which directory was configured when it is not the one analysed, so
     // the upward search is visible rather than magic.
     if source != config.source.as_path() {
         notes.push(format!("configured from {}", source.display()));
+    }
+    if timed_out {
+        notes.push(format!(
+            "the command was killed at {}s: these findings are what it had already \
+reported, and anything it would have found later is absent",
+            config.timeout_secs
+        ));
     }
     if findings.is_empty() {
         notes.push(format!(
@@ -718,5 +748,29 @@ mod tests {
         // demanding one would fail every valgrind run.
         let nowhere = Path::new("/nonexistent/kordon");
         assert!(is_instrumented(nowhere, &VALGRIND));
+    }
+
+    /// A sanitizer that reports and then hangs must not lose the report.
+    ///
+    /// Measured on this host: ASan prints its whole stack-buffer-overflow
+    /// banner and never returns, because it hangs symbolizing it --
+    /// `symbolize=0` returns in 5ms, the default never returns. The deadline
+    /// then kills it, and treating that as "found nothing" discarded a defect
+    /// the sanitizer had already located and printed.
+    #[test]
+    fn a_killed_run_keeps_what_it_already_reported() {
+        let killed = "\
+=================================================================
+==95348==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x749f6c70002a
+WRITE of size 11 at 0x749f6c70002a thread T0
+";
+        // No frames, so it cannot become a finding -- there is no location to
+        // anchor it to and inventing one would be worse than saying nothing.
+        assert!(sanitizer::parse(killed).is_empty());
+
+        // But the class must survive into the report, or a killed run is
+        // indistinguishable from a clean one.
+        let named = sanitizer::classes_named(killed);
+        assert_eq!(named, vec!["AddressSanitizer: stack-buffer-overflow"]);
     }
 }

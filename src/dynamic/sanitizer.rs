@@ -153,6 +153,41 @@ fn parse_ubsan_line(line: &str) -> Option<RuntimeReport> {
 }
 
 /// Extract every report from a run's stderr.
+/// Defect classes named in the text, whether or not a stack trace followed.
+///
+/// [`parse`] deliberately drops a report that collected no frames -- a
+/// `LeakSanitizer` banner announces leaks that the following blocks describe,
+/// and emitting the banner too would double-count them. That rule costs
+/// nothing until a run is killed *between* the banner and its trace, which is
+/// routine here: ASan on this host prints its whole report and then hangs
+/// symbolizing it, so the deadline arrives with a located defect named and no
+/// frames under it.
+///
+/// Such a report cannot become a `Finding` -- there is no location to anchor
+/// it to, and inventing one would be worse than saying nothing. Naming the
+/// class lets the caller report what was seen without pretending to know
+/// where.
+pub fn classes_named(text: &str) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let Some(after) = trimmed
+            .split_once("==ERROR: ")
+            .or_else(|| trimmed.split_once("==WARNING: "))
+            .map(|(_, rest)| rest)
+        else {
+            continue;
+        };
+        if let Some((engine, description)) = after.split_once(": ") {
+            let named = format!("{engine}: {}", class_of(description));
+            if !seen.contains(&named) {
+                seen.push(named);
+            }
+        }
+    }
+    seen
+}
+
 pub fn parse(text: &str) -> Vec<RuntimeReport> {
     let mut out: Vec<RuntimeReport> = Vec::new();
     let mut current: Option<RuntimeReport> = None;
