@@ -156,6 +156,47 @@ Both produced plausible numbers rather than errors, and both invalidated a publi
 
 Earlier harness note, still true: the C++ variants name the flawed function bare `bad()` inside a namespace rather than `<case>_bad`, and the corrected code lives in `goodG2B`/`goodB2G` with no underscore either.
 
+## The dynamic layer, measured the same way (2026-08-25) — don't re-derive
+
+`scripts/score-juliet-dynamic.py` scores the sanitizers against the same suite. Every Juliet case has a `main()` calling the flawed and corrected functions behind their own guards, so building twice separates them: `-DOMITGOOD` leaves only `bad()` (recall), `-DOMITBAD` leaves only `good()` (false positives). Baseline in `data/juliet-dynamic-baseline.json`.
+
+**Dynamic baseline, 25 cases per CWE: 57.8% of *runnable* cases caught, and 0 false positives out of 277 correct functions.**
+
+Zero is not luck: a sanitizer reports a defect that happened, so the only way to flag correct code is to report the wrong class of defect. Which is exactly what it did before class matching was added — see below.
+
+| CWE | static recall / FP | dynamic caught / FP | |
+|---|---|---|---|
+| 562 stack addr return | 0% / 0% | **100% / 0%** | static misses the class entirely |
+| 762 mismatched free | 64% / 2.1% | **100% / 0%** | |
+| 457 uninit | 100% / 68.9% | **100% / 0%** | MSan strictly dominates |
+| 416 use-after-free | 57% / 0% | **88% / 0%** | |
+| 590 free non-heap | 38% / 0% | **67% / 0%** | |
+| 126 overread | 19% / 14.0% | **62% / 0%** | |
+| 121 stack overflow | 2.8% / 1.1% | **60% / 0%** | the static layer's worst gap |
+| 122 heap overflow | 36% / 23.7% | **57% / 0%** | |
+| 124 / 127 | 53% / 47% | 56% / 50% | comparable |
+| 415 double free | **90%** / 6.1% | 68% / 0% | static wins |
+| 401 leak | **78%** / 19.7% | 57% / 0% | static wins |
+| 191 underflow | **43%** / 18.6% | 18% / 0% | |
+| 190 overflow | 12% / 8.8% | 9% / 0% | neither; IKOS's job |
+| 775 fd leak | 13% / 0% | — | 12 of 25 would not build |
+
+**The two layers are complementary, and the numbers say so per class.** Static wins where the defect is on a path the run does not take (leaks, double free). Dynamic wins where the defect depends on a value (bounds, use-after-free, uninitialised reads). CWE-562 and CWE-121 are the clearest cases for running both.
+
+`unreached` is the honest ceiling: 80 of 355 cases never executed their flawed path, because the flaw sits behind `fscanf`, a socket peer, or a `rand()` that came back negative. That is not a miss — "the sanitizer did not fire" and "the code never ran" mean opposite things and the scorer keeps them apart.
+
+### This host hangs ASan's symbolizer — and it cost a whole measurement
+
+A one-line `int a[4]; return a[5];` under ASan never returns. `symbolize=0` returns in 5 ms; `llvm-symbolizer` works standalone. The sandbox breaks the symbolizer subprocess, so it is not Kordon's bug and not Kordon's to fix — but it has two consequences worth knowing:
+
+- **Kordon lost findings to it.** The deadline path discarded the child's output before reading it, so a stack-buffer-overflow ASan had already named came back as "timed out -- nothing it would have found is in this report". Fixed: output is read first, complete reports are kept with a note that the run was killed. A frameless report still cannot become a finding — there is no location to anchor it — but the class it named now reaches the report, because silence there is indistinguishable from a clean run.
+- **The scorer sets `symbolize=0` deliberately**, and Kordon does not. Scoring asks only "did the sanitizer detect this", which needs the banner; Kordon needs frames to place a finding at a line. With the default options CWE-401 scored **0%**, because LeakSanitizer produced *zero bytes* before hanging; with symbolization off it scores 57%.
+
+### Two more scorer traps, same family as the static ones
+
+- **Crediting the wrong defect class.** CWE-416 read 96% false positives until reports were matched against the CWE under test. Its `goodG2B` deliberately never frees — that is what makes it a good *use-after-free* case — so it leaks, and LeakSanitizer correctly reported a real leak in a function labelled good for a different defect.
+- **Treating a deadline as a clean run.** Before the partial-output fix, CWE-121 read 50% of 4 runnable cases; it is 60% of 20.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the

@@ -41,18 +41,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Kept in step with src/dynamic/mod.rs by hand. Measuring flags Kordon does not
 # use would report a tool nobody runs.
+#
+# One deliberate difference: `symbolize=0`. This host's sandbox breaks ASan's
+# symbolizer subprocess -- a one-line `int a[4]; return a[5];` hangs forever,
+# while llvm-symbolizer works standalone -- so the default options either
+# truncate the report mid-trace or, for LeakSanitizer, produce nothing at all
+# before the deadline. CWE-401 scored 0% that way and scores 95%+ with
+# symbolization off.
+#
+# Turning it off is right for *this* measurement and wrong for Kordon: the
+# question here is "can the sanitizer detect this defect", which needs only the
+# banner, whereas Kordon needs frames to place a finding at a line. Kordon's
+# behaviour on such a host is a separate problem, recorded in CLAUDE.md.
 PROFILES = {
     "asan": {
         "cc": "clang",
         "flags": ["-fsanitize=address,undefined", "-fno-omit-frame-pointer",
                   "-fno-sanitize-recover=all", "-g", "-O1"],
-        "env": {"ASAN_OPTIONS": "detect_leaks=1:abort_on_error=0"},
+        "env": {"ASAN_OPTIONS": "detect_leaks=1:abort_on_error=0:symbolize=0"},
         "wrapper": [],
     },
     "msan": {
         "cc": "clang",
         "flags": ["-fsanitize=memory", "-fno-omit-frame-pointer", "-g", "-O1"],
-        "env": {"MSAN_OPTIONS": "exitcode=0"},
+        "env": {"MSAN_OPTIONS": "exitcode=0:symbolize=0"},
         "wrapper": [],
     },
     "valgrind": {
@@ -82,6 +94,32 @@ REPORT_RE = re.compile(
     r"|runtime error:|SUMMARY: (?:Address|Memory|Undefined|Leak)Sanitizer"
 )
 
+# What the sanitizer must actually have said for it to count as detecting the
+# CWE under test.
+#
+# Without this, CWE-416 read 96% false positives: its `goodG2B` deliberately
+# does not free -- that is what makes it a good *use-after-free* case -- so it
+# leaks, and LeakSanitizer correctly reports a real leak in a function labelled
+# good for a different defect. Crediting or charging a report of the wrong
+# class measures the wrong thing in both directions.
+CLASS_RE = {
+    121: r"stack-buffer-overflow|dynamic-stack-buffer-overflow|stack-buffer-underflow",
+    122: r"heap-buffer-overflow",
+    124: r"buffer-underflow|buffer-overflow",
+    126: r"buffer-overflow|stack-buffer-overflow|heap-buffer-overflow|global-buffer-overflow",
+    127: r"buffer-underflow|buffer-overflow",
+    190: r"runtime error:.*(signed integer overflow|cannot be represented)",
+    191: r"runtime error:.*(unsigned integer overflow|negation of|signed integer overflow)",
+    401: r"LeakSanitizer|detected memory leaks",
+    415: r"double-free|attempting double-free",
+    416: r"heap-use-after-free|use-after-poison",
+    457: r"use-of-uninitialized-value|MemorySanitizer",
+    562: r"stack-use-after-return|stack-use-after-scope",
+    590: r"bad-free|attempting free on address which was not malloc",
+    762: r"alloc-dealloc-mismatch|bad-free|new-delete-type-mismatch",
+    775: r"LeakSanitizer|detected memory leaks",
+}
+
 
 def sample(base, limit):
     files = []
@@ -101,7 +139,7 @@ def sample(base, limit):
     return files
 
 
-def build_and_run(src, support, prof, side, repeats, timeout, workdir):
+def build_and_run(src, support, prof, side, repeats, timeout, workdir, want):
     """Return 'caught', 'clean', 'unbuilt' or 'timeout' for one side."""
     spec = PROFILES[prof]
     cc = spec["cc"] + ("++" if src.endswith(".cpp") else "")
@@ -132,14 +170,14 @@ def build_and_run(src, support, prof, side, repeats, timeout, workdir):
                 partial = (e.stdout or b"") + (e.stderr or b"")
                 if isinstance(partial, bytes):
                     partial = partial.decode("utf-8", "replace")
-                if REPORT_RE.search(partial):
+                if REPORT_RE.search(partial) and want.search(partial):
                     return "caught"
                 # No retry otherwise. A case that blocks blocks every time --
                 # `listen_socket` waits on accept() for a peer that never comes.
                 saw_timeout = True
                 break
             blob = (run.stdout or "") + (run.stderr or "")
-            if REPORT_RE.search(blob) or run.returncode == 42:
+            if (REPORT_RE.search(blob) and want.search(blob)) or run.returncode == 42:
                 return "caught"
     finally:
         if os.path.exists(exe):
@@ -185,11 +223,13 @@ def main():
             continue
 
         with tempfile.TemporaryDirectory() as work:
+            want = re.compile(CLASS_RE.get(cwe, r".") , re.I)
+
             def score(src):
                 return (build_and_run(src, support, prof, "bad",
-                                      args.repeats, args.timeout, work),
+                                      args.repeats, args.timeout, work, want),
                         build_and_run(src, support, prof, "good",
-                                      args.repeats, args.timeout, work))
+                                      args.repeats, args.timeout, work, want))
             with ThreadPoolExecutor(max_workers=args.jobs) as pool:
                 outcomes = list(pool.map(score, files))
 
