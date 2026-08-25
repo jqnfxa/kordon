@@ -72,8 +72,13 @@ EQUIVALENT = {
     124: {124, 786, 787, 119, 125, 129},
     126: {126, 125, 788, 119, 129},
     127: {127, 125, 786, 119, 129},
-    190: {190, 197, 680},
-    191: {191, 197},
+    # Not 197. `bugprone-narrowing-conversions` fires on `data + 1` being
+    # narrowed back to char, which is a different observation that happens to
+    # land on the same line -- and it fires identically on goodG2B and goodB2G,
+    # where the overflow is guarded. Counting it credited a check that does not
+    # discriminate, and read as 64% recall where real detection was zero.
+    190: {190, 680},
+    191: {191},
     401: {401, 772},
     415: {415, 416},
     416: {416, 415, 825},
@@ -158,6 +163,10 @@ def main():
                     help="max test files per CWE (the suite has thousands)")
     ap.add_argument("--jobs", type=int, default=20)
     ap.add_argument("--json-out", help="write the raw per-CWE result here")
+    ap.add_argument("--kordon-arg", action="append", default=[],
+                    help="extra flag for kordon, repeatable (e.g. --kordon-arg=--ikos). "
+                         "CWE-190 scores zero without --ikos and is caught with a proof "
+                         "with it, so the baseline must say which was used.")
     args = ap.parse_args()
 
     testcases = os.path.join(args.root, "testcases")
@@ -188,7 +197,14 @@ def main():
                     continue
                 files.append(os.path.join(dirpath, n))
         files.sort()
-        files = files[: args.limit]
+        # Sample evenly, never a prefix. Juliet names cases
+        # `<type>_<source>_<operation>`, so a sorted prefix is entirely one
+        # type and one source: the first 20 CWE-190 files are all `char_*`,
+        # where `data + 1` promotes to int and no overflow exists. Taking a
+        # prefix measured that corner and called it the CWE.
+        if len(files) > args.limit:
+            stride = len(files) / args.limit
+            files = [files[int(i * stride)] for i in range(args.limit)]
         if not files:
             continue
 
@@ -212,7 +228,7 @@ def main():
 
             proc = subprocess.run(
                 [args.kordon, base, "-p", db_dir, "--json",
-                 "-j", str(args.jobs), "--all"],
+                 "-j", str(args.jobs), "--all", *args.kordon_arg],
                 capture_output=True, text=True,
             )
             try:
@@ -267,10 +283,14 @@ def main():
                  if r["bad_total"] else 0.0)
         fpr_s = (100.0 * r["good_flagged_surfaced"] / r["good_total"]
                  if r["good_total"] else 0.0)
+        # Recall alone flatters a check that fires on everything. What matters
+        # is how much more often the flawed function is flagged than the
+        # corrected one sitting beside it.
         print(f"CWE-{cwe:<4} recall {recall:5.1f}% ({rec_s:5.1f}% surfaced)   "
               f"FP {fpr:5.1f}% ({fpr_s:5.1f}% surfaced)   "
+              f"discrim {recall - fpr:+6.1f}%   "
               f"[{r['bad_found']}/{r['bad_total']} bad, "
-              f"{r['good_flagged']}/{r['good_total']} good, {r['files']} files]")
+              f"{r['good_flagged']}/{r['good_total']} good]")
         if r["failed_units"]:
             print(f"          ! {r['failed_units']}")
 

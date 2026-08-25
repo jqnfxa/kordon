@@ -111,23 +111,50 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 ## Measured against labelled ground truth (2026-08-25) — don't re-derive
 
-Kordon is now scored against the **NIST Juliet C/C++ suite 1.3** — the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
+Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-Baseline over 40 files per CWE: **45.5% recall, 16.9% false positives — 34.8% / 2.0% counting only the high- and medium-confidence tiers the report details without `--all`.**
+**Baseline, 40 files per CWE, no `--ikos`: 49.1% recall at 14.5% false positives — 34.8% / 1.8% counting only the high- and medium-confidence tiers the report details without `--all`.**
 
-| strong | weak | absent |
-|---|---|---|
-| 457 (100%), 476 (93%), 415 (80%), 762 (77%), 401 (69%), 563 (64%) | 416 (49%), 775 (39%) | 121/124/126/127 (5%), 122 (10%), 590 (0%), 562 (0%) |
+Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
-Three things this measured that were previously assumed:
+| CWE | recall | FP | discrim | note |
+|---|---|---|---|---|
+| 415 double free | 89.7% | 6.1% | **+83.6** | working |
+| 563 dead store | 76.9% | 5.3% | **+71.7** | working |
+| 762 mismatched free | 64.0% | 2.1% | **+61.9** | working |
+| 476 null deref | 65.6% | 4.6% | **+61.0** | working |
+| 401 leak | 78.1% | 19.7% | **+58.4** | working |
+| 416 use-after-free | 57.1% | 0.0% | **+57.1** | working |
+| 590 free non-heap | 37.9% | 0.0% | +37.9 | half the cases missed |
+| 457 uninit | 100% | 68.9% | +31.1 | all found; noise buried in low tier (2.8% surfaced) |
+| 124 underwrite | 53.1% | 21.6% | +31.5 | |
+| 127 underread | 46.9% | 18.2% | +28.7 | |
+| 191 underflow | 42.9% | 18.6% | +24.3 | 0% surfaced |
+| 775 fd leak | 12.9% | 0.0% | +12.9 | 13 of 40 units failed to compile |
+| 122 heap overflow | 35.7% | 23.7% | +12.1 | |
+| 126 overread | 18.8% | 14.0% | +4.7 | |
+| 190 overflow | 12.1% | 8.8% | +3.3 | see verdict below |
+| **121 stack overflow** | **2.8%** | 1.1% | **+1.7** | the worst gap |
+| 562 stack addr return | 0% | 0% | 0 | only 3 cases sampled |
 
-- **The bounds class is not the tractable core.** CLAUDE.md called CWE-119/125/787/788 "the tractable core"; measured, CWE-121/122/124/126/127 score 5-10%. The dominant Juliet shape is an index from an unbounded source guarded only against negative — `if (data >= 0) buffer[data] = 1;` with `data = RAND32()` — 228 of 628 files in one subdirectory alone. Kordon emits 21 findings on such a file and none of them is the overflow. cppcheck even reports `Condition 'data>=0' is always true` without connecting it. **This is a syntactic shape and the clearest next check to build.**
-- **CWE-190/191 are detected but never shown.** 64% recall, 0% surfaced — every overflow finding is low-confidence, so a default report contains none of them. Either the confidence is wrong or the tier is.
-- **The confidence tiers earn their keep.** Restricting to surfaced tiers cuts false positives 16.9% → 2.0% while costing 45.5% → 34.8% recall. CWE-457 is the extreme: 100% recall at a 75.6% raw FP rate, but only 5.7% surfaced.
+### CWE-190/191 — settled: this is IKOS's job, not a matcher's
 
-**Juliet is synthetic and its scores do not transfer.** The flow-variant scaffolding looks like nothing anyone writes, and the defects this project actually found by comparing a function against a correct sibling have no analogue in the suite. Use it for per-CWE coverage of mechanical cases; keep the ACL raw/fixed pair for realism.
+- **No Clang SA checker covers integer overflow.** Tested directly: `alpha.core.Conversion`, `alpha.security.ArrayBound`, `core.UndefinedBinaryOperatorResult` and all of `alpha.core.*` report nothing on `data = INT_MAX; int result = data + 1;`. This confirms the MISRA note above rather than contradicting it.
+- **IKOS proves it, and Kordon's integration works.** On that case it reports `signed integer overflow` as a *definite* result, and Kordon merges it with cppcheck's `integerOverflow` into one CWE-190 finding at high confidence. Enabling `--ikos` lifts CWE-190 from 12.5% to 31.2% recall and CWE-191 from 41.2% to 52.9% on a matched sample.
+- **The `char` and `short` `_max_` cases are not CWE-190 at all.** `data + 1` promotes to `int`, so nothing overflows; what happens is a narrowing conversion back to `char`. IKOS correctly calls them SAFE. Juliet files them under 190 anyway.
+- **The `rand`/`fscanf`/`socket`/`fgets` families — about 71% of the suite — are unprovable statically.** They need a bound on external input. The honest output is IKOS's "cannot prove safe", which is what `--show-unproven` and the directed-fuzz handoff exist for. Do not build a matcher to chase them.
+- **Consequence for the baseline: it must always record whether `--ikos` was on.** The default report understates CWE-190 badly.
 
-Two harness traps already paid for, both of which read as real results: the C++ variants name the flawed function bare `bad()` inside a namespace rather than `<case>_bad`, so testing only the underscore form scored every C++ flaw as a *correct* function — CWE-762 read 0% until fixed, then 76.7%. And the corrected code lives in `goodG2B`/`goodB2G`, which carry no underscore either, so requiring one shrank the false-positive denominator to a third of its real size.
+### Two harness bugs that read as results, both now fixed
+
+Both produced plausible numbers rather than errors, and both invalidated a published baseline:
+
+- **Crediting a check that does not discriminate.** The scorer's equivalence table counted CWE-197 as detecting CWE-190. `bugprone-narrowing-conversions` fires on `data + 1` narrowing back to `char` — a different observation on the same line — and fires *identically* on the guarded `goodB2G`. CWE-190 read 64% recall where real detection was zero. Hence the discrimination column.
+- **Sampling a prefix instead of a spread.** Juliet names cases `<type>_<source>_<operation>`, so `--limit N` over a sorted list took one type and one source. The first 20 CWE-190 files are all `char_*`, the corner where no overflow exists. Fixing it to an even stride moved CWE-124 from 5% to 53%, CWE-127 from 5% to 47%, and CWE-590 from 0% to 38%.
+
+**Juliet is synthetic and its scores do not transfer.** The flow-variant scaffolding looks like nothing anyone writes, and the defects this project found by comparing a function against a correct sibling have no analogue in the suite. Use it for per-CWE coverage of mechanical cases; keep the ACL raw/fixed pair for realism.
+
+Earlier harness note, still true: the C++ variants name the flawed function bare `bad()` inside a namespace rather than `<case>_bad`, and the corrected code lives in `goodG2B`/`goodB2G` with no underscore either.
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 
@@ -171,20 +198,17 @@ verdict in the table so the next session starts where this one stopped.
 
 | # | CWE | now | verdict | state |
 |---|---|---|---|---|
-| 1 | 190/191 overflow | 64% recall, **0% surfaced** | tiering decision, no new code | **not started** |
-| 2 | 121/122/124/126/127 bounds | 5-10% | dominant shape is syntactic (see below) | **not started** |
-| 3 | 590 free-of-non-heap | 0% | unknown -- triage first | **not started** |
-| 4 | 416 use-after-free | 49% | unknown -- triage first | **not started** |
-| 5 | 775 fd leak | 39% | unknown -- triage first | **not started** |
-| 6 | 563 unused/dead store | 64% | partly ours already | **not started** |
-| 7 | 401/415/762/457/476 | 69-100% | working; revisit last | **not started** |
+| 1 | 190/191 overflow | 12%/43% | **IKOS's job, not a matcher's** | **done — see verdict above** |
+| 2 | 121 stack overflow | 2.8% | dominant shape is syntactic (see below) | **next** |
+| 3 | 126 overread | 18.8% | probably same shape as 121 | not started |
+| 4 | 775 fd leak | 12.9% | 13/40 units failed to compile — fix that first | not started |
+| 5 | 122 heap overflow | 35.7% | triage first | not started |
+| 6 | 590 free non-heap | 37.9% | triage first | not started |
+| 7 | 124/127 under-read/write | 47-53% | triage first | not started |
+| 8 | 457 uninit | 100% / 69% FP | works; the FP tier may be worth trimming | not started |
+| 9 | 401/415/416/476/563/762 | 57-90% | working; revisit last | not started |
 
-**Start with 190/191**: it is the cheapest thing on the list and needs no new
-code. 64% of the flawed functions are already found and none reach the report,
-because every overflow finding is low-confidence. The question is whether the
-confidence is wrong or the tier is, and answering it is a mapping-table change.
-
-**Then the bounds class**, where the dominant shape is already identified: an
+**Start with CWE-121**, where the dominant shape is already identified: an
 index from an unbounded source, guarded only against negative --
 `data = RAND32(); if (data >= 0) buffer[data] = 1;`. Kordon has neighbouring
 checks (`INDEX_USED_BEFORE_CHECK`, `UNCHECKED_CONSTANT_INDEX`) but nothing that
