@@ -113,7 +113,7 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-**Baseline, 40 files per CWE, default flags: 54.6% recall at 7.5% false positives — 45.1% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
+**Baseline, 40 files per CWE, default flags: 54.7% recall at 7.6% false positives — 45.3% / 1.6% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add substantially more; see the per-CWE notes.)
 
 Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
@@ -135,7 +135,7 @@ Read the **discrimination** column (recall − FP), not recall. A check that fir
 | 775 fd leak | 16.3% | 0.9% | +15.4 | dynamic gets 96%; valgrind `--track-fds` |
 | 126 overread | 25.6% | 11.8% | +13.8 | `--ikos` takes it to 86% |
 | 190 overflow | 18.4% | 13.5% | +4.9 | IKOS's job |
-| 562 stack addr return | 0% | 0% | 0 | only 3 cases exist; dynamic gets 100% |
+| 562 stack addr return | 50.0% | 0.0% | +50.0 | was 0%; see below |
 
 ### CWE-190/191 — settled: this is IKOS's job, not a matcher's
 
@@ -320,6 +320,18 @@ The strongest are the ones with a zero good-side: `unix.MismatchedDeallocator` (
 
 - **Small counts say nothing.** A check landing in two functions can show any discrimination at all; that is how the CWE-122 claim went wrong. The table drops anything under 10.
 - **The good side is weaker evidence than a per-CWE score.** A function labelled `good` is only correct *with respect to its own CWE* — Juliet's CWE-416 `goodG2B` deliberately leaks, and LeakSanitizer is right to say so. On top of that, this mode compiles both halves into one translation unit and attributes findings by line range. `NonNullParamChecker`'s 15 good-side hits do not reproduce at all when the corrected half is compiled alone, so they are not yet evidence of anything. **Treat this table as a ranking, and confirm anything actionable per-CWE.**
+
+## CWE-562 — 0% to 50%, and neither cause was detection (2026-08-25)
+
+The only complete hole left in the static baseline. Both causes were bookkeeping.
+
+**A default compiler warning was not in the check set.** clang reports `-Wreturn-stack-address` on `return charString;` with no flags at all, and it is not reachable through any `clang-analyzer-*` checker, so naming it was the whole fix. Same shape as `-Wunused-variable` earlier: **a `clang-diagnostic-*` check does nothing unless it is named, and Kordon names only two.** Worth a sweep for others.
+
+**The scorer could not see the functions holding the defect.** CWE-562 keeps its flaw in `static const int *helperBad()`, and `FUNC_RE` listed return types starting with `void|int|char|...` — `const` is not among them, so those functions were never in the ground truth. Findings landed in no known range and were discarded. Two engines had been reporting the flaw the whole time: Clang SA's `core.StackAddressEscape`, already enabled and already mapped to CWE-562, and cppcheck's `returnDanglingLifetime`.
+
+Matching any definition and gating on the name instead lifted CWE-562 from 0% to **50% at 0% false positives**. That is also the ceiling here: of the 6 functions Juliet labels flawed, only 3 contain a defect — the others are wrappers that call `helperBad()`, and a detector reports at the flaw, not the call.
+
+**Fourth scorer bug in this file, and they share a shape:** every one was a pattern that looked exhaustive and silently matched less than it claimed — `_bad` missing `_badSink`, lowercase `bad` missing `helperBad`, a sorted prefix standing in for a sample, a return-type list missing `const`. Each read as a Kordon gap. **When a CWE reads 0%, check the instrument before the tool.**
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 

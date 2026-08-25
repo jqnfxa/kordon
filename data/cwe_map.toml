@@ -990,6 +990,17 @@ check = "clang-analyzer-alpha.security.ArrayBoundV2"
 cwe = 787
 confidence = "medium"
 
+# Returning the address of a local. clang warns on this by default, so the
+# only thing needed was naming the diagnostic in the check set -- it is not
+# reachable through any `clang-analyzer-*` checker, and CWE-562 measured 0%
+# without it. High confidence: the compiler has the whole function and is not
+# guessing.
+[[rule]]
+tool = "clang-tidy"
+check = "clang-diagnostic-return-stack-address"
+cwe = 562
+confidence = "high"
+
 # valgrind --track-fds. No other engine Kordon runs sees this: file descriptors
 # are not allocations, so LeakSanitizer does not track them.
 [[rule]]

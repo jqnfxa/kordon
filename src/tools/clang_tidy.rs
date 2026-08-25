@@ -68,7 +68,7 @@ pub fn tool() -> Tool {
 pub const DEFAULT_CHECKS: &str =
     "-*,clang-analyzer-*,bugprone-*,\
 clang-analyzer-optin.cplusplus.UninitializedObject,\
-clang-diagnostic-unused-variable,\
+clang-diagnostic-unused-variable,clang-diagnostic-return-stack-address,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
 cppcoreguidelines-pro-bounds-pointer-arithmetic,\

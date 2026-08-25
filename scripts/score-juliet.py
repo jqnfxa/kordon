@@ -92,21 +92,25 @@ EQUIVALENT = {
     369: {369},
 }
 
-# Any function definition at file scope. The name decides whether it is
-# ground truth, and which side.
-FUNC_RE = re.compile(
-    r"^\s*(?:static\s+)?(?:void|int|char|short|long|float|double|unsigned)"
-    r"[\w\s\*]*?\b(\w+)\s*\("
-)
+# Any function definition at file scope. The name decides whether it is ground
+# truth, and which side, so this only has to find the name before the paren.
+#
+# Listing return types does not work: `static const int *helperBad()` starts
+# with `const`, and CWE-562 keeps its entire defect in functions shaped like
+# that -- they were invisible, so the CWE read 0% while two engines were
+# reporting the flaw.
+FUNC_RE = re.compile(r"^\s*[A-Za-z_][\w\s\*&:<>,]*?\b(\w+)\s*\(")
 
 # `..._bad` holds the flaw. The corrected code lives in `goodG2B` / `goodB2G`,
 # which carry no underscore prefix -- requiring one counted only the `..._good`
 # wrapper, and that wrapper just calls the others, so every false positive
 # landed in a function the scorer was not looking at.
-# Also `_54e_badSink` / `_54b_goodG2BSink`: in the multi-file cases the defect
-# does not live in a function called `..._bad`, it lives in a sink several
-# translation units away that the entry function feeds.
-NAME_RE = re.compile(r"(?:_bad\w*|_good\w*)$|^(?:good|bad)\w*$")
+# Any function whose name carries `bad` or `good` in any casing. Juliet spells
+# the convention at least five ways -- `..._01_bad`, a bare `bad()` inside a
+# C++ namespace, `..._54e_badSink` several units from the entry point,
+# `goodG2B`, and `helperBad`, which is where CWE-562 keeps its entire defect.
+# Every narrower pattern tried here missed one of them silently.
+NAME_RE = re.compile(r"bad|good", re.I)
 
 
 def function_ranges(path):
@@ -124,7 +128,10 @@ def function_ranges(path):
 
     i = 0
     while i < len(lines):
-        m = FUNC_RE.match(lines[i])
+        # A definition, not a call or a prototype. Both of those end the line
+        # with `;`, and `CWE562_..._bad();` inside main would otherwise be
+        # recorded as a function whose body is whatever followed it.
+        m = None if lines[i].rstrip().endswith(";") else FUNC_RE.match(lines[i])
         if not m:
             i += 1
             continue
@@ -158,7 +165,8 @@ def classify(name):
     # bad one but whose source makes the whole thing safe. Matching the
     # substring rather than a suffix covers `_bad`, the bare `bad()` the C++
     # variants put in a namespace, and `_54e_badSink` alike.
-    return "bad" if "bad" in name and "good" not in name else "good"
+    low = name.lower()
+    return "bad" if "bad" in low and "good" not in low else "good"
 
 
 def main():
