@@ -103,7 +103,10 @@ FUNC_RE = re.compile(
 # which carry no underscore prefix -- requiring one counted only the `..._good`
 # wrapper, and that wrapper just calls the others, so every false positive
 # landed in a function the scorer was not looking at.
-NAME_RE = re.compile(r"(?:_bad|_good\w*)$|^(?:good|bad)\w*$")
+# Also `_54e_badSink` / `_54b_goodG2BSink`: in the multi-file cases the defect
+# does not live in a function called `..._bad`, it lives in a sink several
+# translation units away that the entry function feeds.
+NAME_RE = re.compile(r"(?:_bad\w*|_good\w*)$|^(?:good|bad)\w*$")
 
 
 def function_ranges(path):
@@ -150,7 +153,12 @@ def classify(name):
     # form scored every C++ flaw as a correct function, which turned real
     # detections into false positives and left those CWEs reporting no flawed
     # functions at all.
-    return "bad" if name == "bad" or name.endswith("_bad") else "good"
+    # Every function on the flawed path carries `bad` and every one on a
+    # corrected path carries `good` -- including `goodG2B`, whose *sink* is the
+    # bad one but whose source makes the whole thing safe. Matching the
+    # substring rather than a suffix covers `_bad`, the bare `bad()` the C++
+    # variants put in a namespace, and `_54e_badSink` alike.
+    return "bad" if "bad" in name and "good" not in name else "good"
 
 
 def main():
@@ -163,6 +171,12 @@ def main():
                     help="max test files per CWE (the suite has thousands)")
     ap.add_argument("--jobs", type=int, default=20)
     ap.add_argument("--json-out", help="write the raw per-CWE result here")
+    ap.add_argument("--multifile", action="store_true",
+                    help="score ONLY the cases split across translation units "
+                         "(_54a.._54e, _81.._84). The defect sits in a sink "
+                         "several units from the value that makes it a defect, "
+                         "so this is what --ctu exists for; the default sample "
+                         "excludes them and cannot show CTU any credit.")
     ap.add_argument("--kordon-arg", action="append", default=[],
                     help="extra flag for kordon, repeatable (e.g. --kordon-arg=--ikos). "
                          "CWE-190 scores zero without --ikos and is caught with a proof "
@@ -189,20 +203,38 @@ def main():
         # measure the CTU gap rather than the checks, and Kordon reports that
         # gap separately.
         files = []
+        groups = {}
         for dirpath, _, names in os.walk(base):
             for n in sorted(names):
                 if not n.endswith((".c", ".cpp")):
                     continue
-                if re.search(r"_\d+[b-e]\.(c|cpp)$", n):
-                    continue
-                files.append(os.path.join(dirpath, n))
+                split = re.search(r"_(\d+)[a-e]\.(c|cpp)$", n) or \
+                    re.search(r"_(8\d)(?:_\w+)?\.(c|cpp)$", n)
+                if args.multifile:
+                    if not split:
+                        continue
+                    # Every part of one case must be in the database together,
+                    # or the analyzer never sees the unit holding the sink.
+                    key = os.path.join(dirpath, n[: split.start()] + split.group(1))
+                    groups.setdefault(key, []).append(os.path.join(dirpath, n))
+                else:
+                    if split:
+                        continue
+                    files.append(os.path.join(dirpath, n))
+
+        if args.multifile:
+            chosen = sorted(groups)
+            if len(chosen) > args.limit:
+                stride = len(chosen) / args.limit
+                chosen = [chosen[int(i * stride)] for i in range(args.limit)]
+            files = [f for k in chosen for f in sorted(groups[k])]
         files.sort()
         # Sample evenly, never a prefix. Juliet names cases
         # `<type>_<source>_<operation>`, so a sorted prefix is entirely one
         # type and one source: the first 20 CWE-190 files are all `char_*`,
         # where `data + 1` promotes to int and no overflow exists. Taking a
         # prefix measured that corner and called it the CWE.
-        if len(files) > args.limit:
+        if not args.multifile and len(files) > args.limit:
             stride = len(files) / args.limit
             files = [files[int(i * stride)] for i in range(args.limit)]
         if not files:

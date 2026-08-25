@@ -236,6 +236,34 @@ Two things to hold onto:
 - **`ArrayBoundV2` is mapped medium, not high**, and the distinction is the checker's own. `cstring.OutOfBounds` says "this copy overflows the destination" and has both sizes. `ArrayBoundV2` says "I cannot show this index is in range" — on rtklib_mod it flags `obs[i].L[f]` for `f < rtk->opt.nf`, where the bound holds by an invariant it cannot see. On 10 real translation units it produced 3 findings, not a flood.
 - **It runs without `--ctu` now.** The analyzer pass takes `Option<&CtuIndex>`; with `None` it drops the cross-TU config and runs *only* the three alpha checkers, reporting as `clang-sa-bounds`. Everything else in `CTU_CHECKERS` is already covered by clang-tidy under `clang-analyzer-*`, so running the full set without an index would pay for a second path-sensitive analysis to learn what Kordon already knows. A default run went from 2.8% to 31.6% on the 25-case sample, and the whole-baseline total from 49.1% to 51.5% recall with false positives flat.
 
+## `--ctu` is worth its cost — measured (2026-08-25)
+
+An earlier note here observed that `--ctu` added nothing over a default run for CWE-122 and left its value an open question. That reading was an artifact of the sample: **`scripts/score-juliet.py` excluded every multi-file case**, which is precisely what CTU exists for. A single-translation-unit corpus cannot give cross-TU analysis any credit.
+
+`--multifile` scores only the split cases — `_54a.c`..`_54e.c` and the `_81`..`_84` class variants — where the entry function is in one unit and the sink holding the defect is several units away. All parts of a case go into the database together, or the analyzer never sees the unit with the sink.
+
+**On those cases: recall 17.4% → 28.8%, false positives 11.7% → 11.9%.** That is 39 more flawed functions found out of 344, at a cost of one additional flagged correct function out of 750.
+
+Three classes go from **literally nothing to detectable**, because the allocation and its misuse sit in different files:
+
+| CWE | no `--ctu` | `--ctu` |
+|---|---|---|
+| 476 null deref | **0%** | 33.3% |
+| 762 mismatched free | **0%** | 36.4% |
+| 416 use-after-free | **0%** | 30.0% |
+| 457 uninit | 55.0% | 75.0% |
+| 124 underwrite | 26.1% | 43.5% |
+| 121 stack overflow | 9.5% | 23.8% |
+| 415 double free | 40.0% | 50.0% |
+| 401 leak | 23.1% | 34.6% |
+
+Kordon's own fixture agrees and is the cheapest check of all: `testdata/uninit_owner/` fails `--require-cwe 665` without the flag and passes with it. That is the fallible-init class this file has called the measured CTU blocker since the start — **plain clang CTU already closes it, with no CodeChecker involved.**
+
+Two things follow:
+
+- **Recommend `--ctu` for any real run.** It is not a marginal flag; for three defect classes it is the difference between coverage and none.
+- **Never compare CTU on a single-file corpus.** It will read as free cost, which is how the earlier note went wrong.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
@@ -315,7 +343,7 @@ an exemption that looked correct and silently matched nothing.
   - Two sibling defects in the same investigation are fair misses, worth recording so they are not chased: `obs.data == NULL` (depends on how many observations survive a runtime constellation filter — no static engine can bound that, and the report said so) and a missing `iobsr = obs.n - 1` before a backward sweep.
   - What actually solved that investigation: reading the code and diffing against stock RTKLIB, then UBSan/ASan for confirmation with an exact stack. Diffing a modified vendor library against upstream is a detection strategy Kordon does not have at all.
 - **The `fault` profile cannot inject under valgrind** (measured, see above). Direction: drop the valgrind wrapper from the sweep, detect defects from the target's exit status and stderr, and recover a stack with `gdb -batch -ex run -ex bt` on abnormal termination — that worked by hand. Needs a gdb-backtrace → `RuntimeReport` parser; note `RuntimeReport::anchor` returns `None` for a frameless report, so a finding with no frames cannot be emitted at all.
-- **CTU via CodeChecker is the highest-value next step** — it is the measured blocker for the whole fallible-init class (`testdata/uninit_owner/`). CodeChecker is not installed on this machine (`pip install codechecker` in a venv).
+- ~~CTU via CodeChecker is the highest-value next step~~ — **done, and CodeChecker turned out to be unnecessary.** Plain `clang --analyze` with `experimental-enable-naive-ctu-analysis` and an `externalDefMap` index closes the fallible-init class: `testdata/uninit_owner/` passes `--require-cwe 665` with `--ctu`. Measured value across Juliet's multi-file cases is above. CodeChecker would still be worth having for its build interception, but it is no longer on the critical path.
 - **CWE-762 vs 763 for `unix.MismatchedDeallocator`.** Kordon maps it to 762 (literally "mismatched memory management routines"); prior ACL work mapped it to 763 because their requirements list named 763. Both are in the catalog. Confirm which the requirements actually want.
 - Dedup is keyed on `file + line + CWE`, so two engines reporting one defect on *adjacent* lines stay separate (seen: clang-analyzer flags a dead store at the initialization line, cppcheck at the overwrite line). Consider a small line window.
 - Licensing review of IKOS's NASA Open Source Agreement before committing to embed it.
