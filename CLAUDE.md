@@ -113,7 +113,7 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 Kordon is scored against the **NIST Juliet C/C++ suite 1.3**, the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
 
-**Baseline, 40 files per CWE, no `--ikos`: 49.1% recall at 14.5% false positives — 34.8% / 1.8% counting only the high- and medium-confidence tiers the report details without `--all`.**
+**Baseline, 40 files per CWE, default flags: 51.5% recall at 14.6% false positives — 38.5% / 1.9% counting only the high- and medium-confidence tiers the report details without `--all`.** (`--ikos` and `--ctu` add more; see the per-CWE notes.)
 
 Read the **discrimination** column (recall − FP), not recall. A check that fires on every arithmetic line scores high recall and detects nothing.
 
@@ -127,14 +127,14 @@ Read the **discrimination** column (recall − FP), not recall. A check that fir
 | 416 use-after-free | 57.1% | 0.0% | **+57.1** | working |
 | 590 free non-heap | 37.9% | 0.0% | +37.9 | half the cases missed |
 | 457 uninit | 100% | 68.9% | +31.1 | all found; noise buried in low tier (2.8% surfaced) |
-| 124 underwrite | 53.1% | 21.6% | +31.5 | |
+| 124 underwrite | 65.6% | 22.7% | +42.9 | was 53.1% |
 | 127 underread | 46.9% | 18.2% | +28.7 | |
 | 191 underflow | 42.9% | 18.6% | +24.3 | 0% surfaced |
 | 775 fd leak | 12.9% | 0.0% | +12.9 | 13 of 40 units failed to compile |
-| 122 heap overflow | 35.7% | 23.7% | +12.1 | |
+| 122 heap overflow | 46.4% | 23.7% | +22.8 | was 35.7% |
 | 126 overread | 18.8% | 14.0% | +4.7 | |
 | 190 overflow | 12.1% | 8.8% | +3.3 | see verdict below |
-| **121 stack overflow** | **2.8%** | 1.1% | **+1.7** | the worst gap |
+| 121 stack overflow | 16.7% | 1.1% | +15.6 | was 2.8%; alpha checkers |
 | 562 stack addr return | 0% | 0% | 0 | only 3 cases sampled |
 
 ### CWE-190/191 — settled: this is IKOS's job, not a matcher's
@@ -234,7 +234,7 @@ Two things to hold onto:
 
 - **CWE-122 discriminates negatively** at the raw tier: the checkers flag corrected heap cases more often than flawed ones. At the surfaced tier it is +10%. Worth a look before trusting heap-overflow output.
 - **`ArrayBoundV2` is mapped medium, not high**, and the distinction is the checker's own. `cstring.OutOfBounds` says "this copy overflows the destination" and has both sizes. `ArrayBoundV2` says "I cannot show this index is in range" — on rtklib_mod it flags `obs[i].L[f]` for `f < rtk->opt.nf`, where the bound holds by an invariant it cannot see. On 10 real translation units it produced 3 findings, not a flood.
-- **None of this is reachable without `--ctu`.** A default run still scores 2.8% on CWE-121. Making the analyzer pass runnable without a CTU index is the obvious follow-up.
+- **It runs without `--ctu` now.** The analyzer pass takes `Option<&CtuIndex>`; with `None` it drops the cross-TU config and runs *only* the three alpha checkers, reporting as `clang-sa-bounds`. Everything else in `CTU_CHECKERS` is already covered by clang-tidy under `clang-analyzer-*`, so running the full set without an index would pay for a second path-sensitive analysis to learn what Kordon already knows. A default run went from 2.8% to 31.6% on the 25-case sample, and the whole-baseline total from 49.1% to 51.5% recall with false positives flat.
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 

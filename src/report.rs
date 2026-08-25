@@ -239,9 +239,9 @@ impl<'a> Report<'a> {
                 ToolOutcome::Skipped(why) => format!("SKIPPED — {why}"),
                 ToolOutcome::Failed(why) => format!("FAILED — {why}"),
             };
-            let mut line = format!("  {:<14} {}\n", run.tool.as_str(), status);
+            let mut line = format!("  {:<15} {}\n", run.tool.as_str(), status);
             for note in &run.notes {
-                line.push_str(&format!("  {:<14} note: {}\n", "", note));
+                line.push_str(&format!("  {:<15} note: {}\n", "", note));
             }
             line
         };

@@ -23,9 +23,21 @@ use crate::cwe::CweTable;
 use crate::finding::{Confidence, Event, Finding, Severity, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
 
-pub fn tool() -> Tool {
-    Tool::new("clang-sa-ctu")
+pub fn tool(ctu: bool) -> Tool {
+    Tool::new(if ctu { "clang-sa-ctu" } else { "clang-sa-bounds" })
 }
+
+/// The checkers clang-tidy cannot reach, run on their own when there is no
+/// CTU index.
+///
+/// Everything else in [`CTU_CHECKERS`] is already covered by the clang-tidy
+/// pass under `clang-analyzer-*`, so running the full set without CTU would
+/// pay for a second path-sensitive analysis to learn what Kordon already
+/// knows. The `alpha` checkers are the exception: no spelling of
+/// `--checks=clang-analyzer-alpha.*` enables them, so this is the only way
+/// they run at all.
+pub const ALPHA_CHECKERS: &str = "alpha.security.ArrayBoundV2,\
+alpha.unix.cstring.OutOfBounds,alpha.unix.cstring.NotNullTerminated";
 
 /// Checkers enabled for the CTU pass.
 ///
@@ -59,14 +71,14 @@ pub fn run(
     sources: &[PathBuf],
     compile_db: Option<&CompileDb>,
     extra_args: &[String],
-    index: &CtuIndex,
+    index: Option<&CtuIndex>,
     out_dir: &Path,
     jobs: usize,
     table: &CweTable,
 ) -> (ToolRun, CallGraph) {
     if std::fs::create_dir_all(out_dir).is_err() {
         return (
-            ToolRun::failed(tool(), format!("could not create {}", out_dir.display())),
+            ToolRun::failed(tool(index.is_some()), format!("could not create {}", out_dir.display())),
             CallGraph::default(),
         );
     }
@@ -113,7 +125,7 @@ pub fn run(
         failed_units += failed;
         reports_written += reports.len();
         for report in reports {
-            match parse_plist(&report, table) {
+            match parse_plist(&report, table, index.is_some()) {
                 Ok(mut parsed) => findings.append(&mut parsed),
                 Err(err) => notes.push(format!("could not parse {}: {err}", report.display())),
             }
@@ -126,13 +138,13 @@ pub fn run(
             sources.len()
         ));
     }
-    if !index.failed.is_empty() {
+    if index.is_some_and(|i| !i.failed.is_empty()) {
         // The important one: a unit missing from the index is not merely
         // unanalyzed, it is invisible to *every other* unit's analysis too.
         notes.push(format!(
             "{} translation unit(s) are absent from the CTU index — definitions in them \
              stayed opaque to all other units",
-            index.failed.len()
+            index.map_or(0, |i| i.failed.len())
         ));
     }
 
@@ -156,7 +168,7 @@ did not run, which is not the same as finding nothing",
 
     (
         ToolRun {
-            tool: tool(),
+            tool: tool(index.is_some()),
             outcome,
             findings,
             notes,
@@ -174,7 +186,7 @@ fn analyze_one(
     source: &Path,
     compile_db: Option<&CompileDb>,
     extra_args: &[String],
-    index: &CtuIndex,
+    index: Option<&CtuIndex>,
     out: &Path,
 ) -> Result<(bool, CallGraph)> {
     let mut cmd = Command::new(driver_for(source));
@@ -187,14 +199,23 @@ fn analyze_one(
         .arg("-Xanalyzer")
         .arg("-analyzer-checker")
         .arg("-Xanalyzer")
-        .arg(CTU_CHECKERS)
-        .arg("-Xanalyzer")
-        .arg("-analyzer-config")
-        .arg("-Xanalyzer")
-        .arg(format!(
-            "experimental-enable-naive-ctu-analysis=true,ctu-dir={},display-ctu-progress=true",
-            index.dir.display()
-        ));
+        .arg(if index.is_some() {
+            CTU_CHECKERS
+        } else {
+            ALPHA_CHECKERS
+        });
+
+    // Without an index there is no cross-TU config to add, and asking for one
+    // makes the analyzer error rather than fall back.
+    if let Some(index) = index {
+        cmd.arg("-Xanalyzer")
+            .arg("-analyzer-config")
+            .arg("-Xanalyzer")
+            .arg(format!(
+                "experimental-enable-naive-ctu-analysis=true,ctu-dir={},display-ctu-progress=true",
+                index.dir.display()
+            ));
+    }
 
     if let Some(db) = compile_db {
         if let Some(args) = db.args_for(source) {
@@ -234,7 +255,7 @@ fn default_confidence(check: &str) -> Confidence {
 /// Shape: a `files` array of paths, then `diagnostics`, each with a
 /// `check_name`, `description`, a `location` (indices into `files`), and a
 /// `path` of steps that may span several of those files.
-pub fn parse_plist(path: &Path, table: &CweTable) -> Result<Vec<Finding>> {
+pub fn parse_plist(path: &Path, table: &CweTable, ctu: bool) -> Result<Vec<Finding>> {
     let value: plist::Value = plist::from_file(path)?;
     let root = match value.as_dictionary() {
         Some(dict) => dict,
@@ -283,7 +304,7 @@ pub fn parse_plist(path: &Path, table: &CweTable) -> Result<Vec<Finding>> {
         // two passes dedup against each other.
         let native_id = format!("clang-analyzer-{check}");
         let class = table.classify(
-            &tool(),
+            &tool(ctu),
             &native_id,
             &message,
             None,
@@ -297,7 +318,7 @@ pub fn parse_plist(path: &Path, table: &CweTable) -> Result<Vec<Finding>> {
             .unwrap_or_default();
 
         findings.push(Finding {
-            tool: tool(),
+            tool: tool(ctu),
             native_id,
             cwe: class.cwe,
             cwe_source: class.source,
@@ -378,6 +399,6 @@ mod tests {
     #[test]
     fn missing_plist_is_an_error_not_silent_success() {
         let table = CweTable::builtin().unwrap();
-        assert!(parse_plist(Path::new("/nonexistent/kordon.plist"), &table).is_err());
+        assert!(parse_plist(Path::new("/nonexistent/kordon.plist"), &table, true).is_err());
     }
 }

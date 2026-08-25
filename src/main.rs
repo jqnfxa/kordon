@@ -319,7 +319,7 @@ fn main() -> Result<()> {
                     &sources,
                     compile_db.as_ref(),
                     &extra,
-                    &index,
+                    Some(&index),
                     &ctu_scratch.join("reports"),
                     cli.jobs,
                     &table,
@@ -329,14 +329,31 @@ fn main() -> Result<()> {
             }
             Err(err) => {
                 runs.push(ToolRun::failed(
-                    tools::clang_sa::tool(),
+                    tools::clang_sa::tool(true),
                     format!("could not build CTU index: {err}"),
                 ));
             }
         }
     } else {
+        // Still run the analyzer, just without an index. It carries the three
+        // `alpha` checkers, which are the only coverage Kordon has of the
+        // buffer-overflow class -- `memcpy` past the end of the destination
+        // and friends -- and which clang-tidy cannot enable in any spelling.
+        // Skipping the pass entirely because CTU was not asked for left
+        // CWE-121 at 2.8% on a default run.
+        let extra = vec![format!("-std={}", cli.std)];
+        let (run, _) = tools::clang_sa::run(
+            &sources,
+            compile_db.as_ref(),
+            &extra,
+            None,
+            &ctu_scratch.join("bounds"),
+            cli.jobs,
+            &table,
+        );
+        runs.push(run);
         runs.push(ToolRun::skipped(
-            tools::clang_sa::tool(),
+            tools::clang_sa::tool(true),
             "--ctu not given; cross-TU defects are not covered",
         ));
     }
@@ -524,9 +541,11 @@ fn main() -> Result<()> {
         print!("{}", report.render_text(cli.verbose, cli.all, cli.show_unproven));
     }
 
-    // Only clean up an index we created ourselves; an explicit --ctu-dir is
-    // the user asking to keep it.
-    if cli.ctu && cli.ctu_dir.is_none() {
+    // Only clean up a directory we created ourselves; an explicit --ctu-dir is
+    // the user asking to keep it. Not gated on `--ctu` any more: the bounds
+    // pass writes its plists here on every run, so gating left one directory
+    // per invocation behind in the temp dir.
+    if cli.ctu_dir.is_none() {
         let _ = std::fs::remove_dir_all(&ctu_scratch);
     }
     if cli.ikos {
