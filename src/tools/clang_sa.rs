@@ -34,7 +34,25 @@ pub fn tool() -> Tool {
 /// benefit from seeing across translation units. AST-matcher checks gain
 /// nothing from CTU and already run in the clang-tidy pass.
 pub const CTU_CHECKERS: &str = "core,cplusplus,unix,deadcode,nullability,\
-optin.cplusplus.UninitializedObject,optin.portability.UnixAPI";
+optin.cplusplus.UninitializedObject,optin.portability.UnixAPI,\
+alpha.security.ArrayBoundV2,alpha.unix.cstring.OutOfBounds,\
+alpha.unix.cstring.NotNullTerminated";
+
+// The three `alpha` checkers are the only way Kordon reaches the stack
+// buffer-overflow class at all. Measured on Juliet CWE-121: the static layer
+// scored 2.8% without them, and no other engine covers the shape --
+// `memcpy(dest, src, sizeof(src))` and `strcpy` past a buffer that is one byte
+// short are library calls, so IKOS reports the program SAFE and cppcheck says
+// nothing.
+//
+// They live here rather than in the clang-tidy pass because **clang-tidy
+// cannot enable an alpha checker at all**: `--checks=clang-analyzer-alpha.*`
+// in any spelling yields "No checks enabled", and there is no config option
+// that reaches them. Only a direct `clang --analyze -analyzer-checker` does,
+// which is what this pass already is.
+//
+// They are marked "Enable only for development!" upstream, so they are
+// measured rather than assumed -- see the Juliet numbers in CLAUDE.md.
 
 /// Run the analyzer over `sources` with the CTU index active.
 pub fn run(

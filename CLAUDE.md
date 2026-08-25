@@ -197,6 +197,45 @@ A one-line `int a[4]; return a[5];` under ASan never returns. `symbolize=0` retu
 - **Crediting the wrong defect class.** CWE-416 read 96% false positives until reports were matched against the CWE under test. Its `goodG2B` deliberately never frees — that is what makes it a good *use-after-free* case — so it leaks, and LeakSanitizer correctly reported a real leak in a function labelled good for a different defect.
 - **Treating a deadline as a clean run.** Before the partial-output fix, CWE-121 read 50% of 4 runnable cases; it is 60% of 20.
 
+## CWE-775 and CWE-121, worked (2026-08-25) — don't re-derive
+
+### CWE-775 — 0% to 96%, and none of it was a detection problem
+
+Two causes, neither a gap in Kordon's reasoning:
+
+- **The wrong instrument.** File descriptors are not allocations, so LeakSanitizer does not track them and no engine Kordon ran could see an unclosed `fopen`/`open`. valgrind can, given `--track-fds`, which the profile did not pass. It now does.
+- **The scorer counted unportable cases as failures.** 8 of 25 CWE-775 cases are `w32CreateFile` (Windows API) and 5 more are the 81-84 class variants split as `_82_bad.cpp`, which have no `main()`. Both are excluded now.
+
+The fd report does not look like valgrind's others: a bare `<stack>` after `<status>FINISHED</status>`, with no `<error>` wrapper, no `<kind>` and no `<what>`. The parser keyed on the error envelope every other report has, so it saw nothing. Mapped to CWE-775 at high confidence — the descriptor was observed open at exit, which is a fact about the run.
+
+### CWE-121 — the alpha checkers are the whole story, and only `--ctu` can reach them
+
+The shape breakdown corrects an earlier note in this file. CWE-129 (an index from an unbounded source, guarded only against negative) is **6%** of the suite, not the dominant shape — that reading came from one subdirectory. The bulk is library calls: **CWE805 36%** (`memcpy` with a length that overruns the destination), **CWE806 23%** (`strncpy(dest, data, strlen(data))` — a bound taken from the source), **CWE193 17%** (off-by-one, a buffer one byte short of its terminator).
+
+Measured on those shapes:
+
+- **IKOS reports the program SAFE** for CWE805/806/193. It does not model `strcpy`/`strncpy`/`memcpy` bounds. It *does* catch CWE129, as a warning ("accessing index between 0 and 2147483647 of local variable 'buffer' of 10 elements") — the unprovable-input case, which is what it is for.
+- **Three `alpha` checkers cover the library-call shapes**: `alpha.unix.cstring.OutOfBounds` ("Memory copy function overflows the destination buffer"), `alpha.security.ArrayBoundV2`, `alpha.unix.cstring.NotNullTerminated`.
+- **clang-tidy cannot enable an alpha checker at all.** `--checks=clang-analyzer-alpha.*` in every spelling yields "No checks enabled", and no config option reaches them. Only a direct `clang --analyze -analyzer-checker` does — which is what the `--ctu` pass already is, so they live there.
+
+With `--ctu`, on 25 cases per CWE:
+
+| CWE | was | now | discrim |
+|---|---|---|---|
+| 121 | 2.8% | **31.6%** | +19.8 |
+| 124 | 53% | **73.7%** | +46.6 |
+| 126 | 18.8% | **42.1%** | +22.4 |
+| 127 | 46.9% | 42.1% | +21.8 |
+| 122 | 35.7% | 20.0% | **−10.2** |
+
+Raw false positives rise to 21.9% and **surfaced false positives are 1.1%** — the tiering absorbs the alpha noise, which is what it is for.
+
+Two things to hold onto:
+
+- **CWE-122 discriminates negatively** at the raw tier: the checkers flag corrected heap cases more often than flawed ones. At the surfaced tier it is +10%. Worth a look before trusting heap-overflow output.
+- **`ArrayBoundV2` is mapped medium, not high**, and the distinction is the checker's own. `cstring.OutOfBounds` says "this copy overflows the destination" and has both sizes. `ArrayBoundV2` says "I cannot show this index is in range" — on rtklib_mod it flags `obs[i].L[f]` for `f < rtk->opt.nf`, where the bound holds by an invariant it cannot see. On 10 real translation units it produced 3 findings, not a flood.
+- **None of this is reachable without `--ctu`.** A default run still scores 2.8% on CWE-121. Making the analyzer pass runnable without a CTU index is the obvious follow-up.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
@@ -240,9 +279,9 @@ verdict in the table so the next session starts where this one stopped.
 | # | CWE | now | verdict | state |
 |---|---|---|---|---|
 | 1 | 190/191 overflow | 12%/43% | **IKOS's job, not a matcher's** | **done — see verdict above** |
-| 2 | 121 stack overflow | 2.8% | dominant shape is syntactic (see below) | **next** |
+| 2 | 121 stack overflow | 2.8% -> 31.6% with --ctu | alpha checkers, reachable only via --ctu | **done** |
 | 3 | 126 overread | 18.8% | probably same shape as 121 | not started |
-| 4 | 775 fd leak | 12.9% | 13/40 units failed to compile — fix that first | not started |
+| 4 | 775 fd leak | 0% -> 96% dynamic | valgrind --track-fds | **done** |
 | 5 | 122 heap overflow | 35.7% | triage first | not started |
 | 6 | 590 free non-heap | 37.9% | triage first | not started |
 | 7 | 124/127 under-read/write | 47-53% | triage first | not started |

@@ -957,6 +957,33 @@ check = "clang-diagnostic-unused-variable"
 cwe = 563
 confidence = "medium"
 
+# Clang SA alpha checkers, reachable only through the --ctu pass. They cover
+# the library-call bounds shapes -- memcpy/strcpy past the end of the
+# destination -- that no other engine here sees.
+[[rule]]
+tool = "clang-sa-ctu"
+check = "clang-analyzer-alpha.unix.cstring.OutOfBounds"
+cwe = 787
+confidence = "high"
+
+# Medium, not high, and the distinction is the checker's own. cstring.OutOfBounds
+# says "this copy overflows the destination" -- it has both sizes. ArrayBoundV2
+# says "I cannot show this index is in range", which is a different claim: on
+# rtklib_mod it flags `obs[i].L[f]` for `f < rtk->opt.nf`, where the bound holds
+# by an invariant the analyzer cannot see. Reporting that at high confidence
+# would put an unprovable bound beside a proved overflow.
+[[rule]]
+tool = "clang-sa-ctu"
+check = "clang-analyzer-alpha.security.ArrayBoundV2"
+cwe = 787
+confidence = "medium"
+
+[[rule]]
+tool = "clang-sa-ctu"
+check = "clang-analyzer-alpha.unix.cstring.NotNullTerminated"
+cwe = 170
+confidence = "medium"
+
 # valgrind --track-fds. No other engine Kordon runs sees this: file descriptors
 # are not allocations, so LeakSanitizer does not track them.
 [[rule]]
