@@ -109,6 +109,26 @@ Implementation decisions settled: orchestrator is **Rust** (single crate, `src/`
 
 **A cmake project with both a shared and a static target lists every source twice** in `compile_commands.json` (159 files, 318 entries here). Kordon walks the filesystem for sources rather than the database, so this does not double the work — but it does double clang-tidy's raw diagnostic counts and its per-compile-command error lines.
 
+## Measured against labelled ground truth (2026-08-25) — don't re-derive
+
+Kordon is now scored against the **NIST Juliet C/C++ suite 1.3** — the only labelled corpus of any size for this defect class. Every case ships a flawed function and a corrected counterpart in one file, so a finding inside a `_bad` function is a hit and one inside a `good*` function is unambiguously wrong. `scripts/setup-juliet.sh` fetches it, `scripts/score-juliet.py` scores it, baseline in `data/juliet-baseline.json`.
+
+Baseline over 40 files per CWE: **45.5% recall, 16.9% false positives — 34.8% / 2.0% counting only the high- and medium-confidence tiers the report details without `--all`.**
+
+| strong | weak | absent |
+|---|---|---|
+| 457 (100%), 476 (93%), 415 (80%), 762 (77%), 401 (69%), 563 (64%) | 416 (49%), 775 (39%) | 121/124/126/127 (5%), 122 (10%), 590 (0%), 562 (0%) |
+
+Three things this measured that were previously assumed:
+
+- **The bounds class is not the tractable core.** CLAUDE.md called CWE-119/125/787/788 "the tractable core"; measured, CWE-121/122/124/126/127 score 5-10%. The dominant Juliet shape is an index from an unbounded source guarded only against negative — `if (data >= 0) buffer[data] = 1;` with `data = RAND32()` — 228 of 628 files in one subdirectory alone. Kordon emits 21 findings on such a file and none of them is the overflow. cppcheck even reports `Condition 'data>=0' is always true` without connecting it. **This is a syntactic shape and the clearest next check to build.**
+- **CWE-190/191 are detected but never shown.** 64% recall, 0% surfaced — every overflow finding is low-confidence, so a default report contains none of them. Either the confidence is wrong or the tier is.
+- **The confidence tiers earn their keep.** Restricting to surfaced tiers cuts false positives 16.9% → 2.0% while costing 45.5% → 34.8% recall. CWE-457 is the extreme: 100% recall at a 75.6% raw FP rate, but only 5.7% surfaced.
+
+**Juliet is synthetic and its scores do not transfer.** The flow-variant scaffolding looks like nothing anyone writes, and the defects this project actually found by comparing a function against a correct sibling have no analogue in the suite. Use it for per-CWE coverage of mechanical cases; keep the ACL raw/fixed pair for realism.
+
+Two harness traps already paid for, both of which read as real results: the C++ variants name the flawed function bare `bad()` inside a namespace rather than `<case>_bad`, so testing only the underscore form scored every C++ flaw as a *correct* function — CWE-762 read 0% until fixed, then 76.7%. And the corrected code lives in `goodG2B`/`goodB2G`, which carry no underscore either, so requiring one shrank the false-positive denominator to a third of its real size.
+
 ## Open questions for next session
 - **Missed detection to close: a loop variable used as an index after the loop ran to completion.** Reported from `~/VsCode/Satellite/rtklib_mod` (`ddidx` in `sat/pkt_sputnik_prcpos.c`): `ssat[i-k]` is read with `i-k == MAXSAT`, one past the end. The loop finishes without taking its `break`, so the index holds the bound, and the read happens after the loop. **Not flagged by any of the five engines, with CTU on; UBSan caught it in seconds.**
   - This is worth building because it is *purely syntactic* — no runtime values, no path sensitivity, no cross-TU reasoning. And it is **not** the ordering problem that blocked three earlier checks: this needs "is this reference outside the loop that bound the variable", which `hasAncestor`/`unless(hasAncestor(forStmt(equalsBoundNode(...))))` can express, not statement precedence, which matchers cannot.
