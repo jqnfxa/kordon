@@ -129,6 +129,80 @@ Three things this measured that were previously assumed:
 
 Two harness traps already paid for, both of which read as real results: the C++ variants name the flawed function bare `bad()` inside a namespace rather than `<case>_bad`, so testing only the underscore form scored every C++ flaw as a *correct* function — CWE-762 read 0% until fixed, then 76.7%. And the corrected code lives in `goodG2B`/`goodB2G`, which carry no underscore either, so requiring one shrank the false-positive denominator to a third of its real size.
 
+## Working plan: close the Juliet gaps, CWE by CWE
+
+The standing plan. Work one CWE at a time, in the order below, and record the
+verdict in the table so the next session starts where this one stopped.
+
+### The loop, per CWE
+
+1. **Read the cases before running anything.** `ls testcases/CWE<n>_*/s01/` and
+   read three or four `_01` variants plus one high-numbered flow variant. The
+   goal is to name the *shapes* the CWE is made of, not to count them.
+2. **Triage each shape into one of five verdicts**, and write the verdict down.
+   This is the whole point of the exercise -- deciding what is out of reach is
+   as valuable as building a check, and far cheaper than rediscovering it:
+   - **syntactic** -- a shape a matcher can express. Build the check.
+   - **value-range** -- needs to bound an expression (`data = RAND32()`).
+     IKOS territory, or a heuristic that flags the *missing guard* rather than
+     proving the overflow.
+   - **cross-TU** -- the source and sink are in different files (`_54a.c` ..
+     `_54e.c`). Blocked on CodeChecker; do not attempt piecemeal.
+   - **runtime** -- only decidable by executing. Dynamic layer, and honestly
+     reported as unreachable statically.
+   - **out of scope** -- injection, access control, or a Juliet artifact that
+     no real code contains. Record and skip; do not chase the score.
+3. **Run the scorer for that CWE alone**:
+   `scripts/score-juliet.py <root> --cwe <n> --limit 40`
+4. **Fix what the triage marked syntactic.** New checks follow the existing
+   discipline: validate the matcher by hand with `clang-query` first (a
+   malformed matcher returns 0 matches, not an error), add a `testdata/`
+   fixture with both a positive and the corrected form, and assert the
+   matcher's invariants in a Rust test.
+5. **Re-run the *whole* baseline, not just that CWE.** A check built for one
+   class routinely adds false positives to another; `data/juliet-baseline.json`
+   is the regression record. Update it only when the change is understood.
+6. **Check the fix against real code too.** Juliet is synthetic; a check that
+   scores well there and floods a real project is not an improvement. The
+   corpora already wired up: `~/VsCode/pkt-astronomia` (159 TUs, C and C++),
+   `~/VsCode/Satellite/rtklib_mod` (10 TUs, terse C), the ACL raw/fixed pair.
+
+### Order of work, by value rather than by number
+
+| # | CWE | now | verdict | state |
+|---|---|---|---|---|
+| 1 | 190/191 overflow | 64% recall, **0% surfaced** | tiering decision, no new code | **not started** |
+| 2 | 121/122/124/126/127 bounds | 5-10% | dominant shape is syntactic (see below) | **not started** |
+| 3 | 590 free-of-non-heap | 0% | unknown -- triage first | **not started** |
+| 4 | 416 use-after-free | 49% | unknown -- triage first | **not started** |
+| 5 | 775 fd leak | 39% | unknown -- triage first | **not started** |
+| 6 | 563 unused/dead store | 64% | partly ours already | **not started** |
+| 7 | 401/415/762/457/476 | 69-100% | working; revisit last | **not started** |
+
+**Start with 190/191**: it is the cheapest thing on the list and needs no new
+code. 64% of the flawed functions are already found and none reach the report,
+because every overflow finding is low-confidence. The question is whether the
+confidence is wrong or the tier is, and answering it is a mapping-table change.
+
+**Then the bounds class**, where the dominant shape is already identified: an
+index from an unbounded source, guarded only against negative --
+`data = RAND32(); if (data >= 0) buffer[data] = 1;`. Kordon has neighbouring
+checks (`INDEX_USED_BEFORE_CHECK`, `UNCHECKED_CONSTANT_INDEX`) but nothing that
+matches "tested for one side of the range only".
+
+### What "should catch" means here
+
+A case is worth catching when the defect is visible in the code as written.
+`buffer[data]` with only a lower-bound test is such a case: no value analysis is
+needed to see that one side is unchecked. `buffer[i]` where `i` came through
+three function calls in two files is not -- that is the CTU gap, already
+recorded, and pretending a matcher can reach it produces a check that fires on
+shape alone and floods real code.
+
+Resist raising recall by loosening a guard. Every exemption removed is a real
+project's false positive, and this session already has three worked examples of
+an exemption that looked correct and silently matched nothing.
+
 ## Open questions for next session
 - **Missed detection to close: a loop variable used as an index after the loop ran to completion.** Reported from `~/VsCode/Satellite/rtklib_mod` (`ddidx` in `sat/pkt_sputnik_prcpos.c`): `ssat[i-k]` is read with `i-k == MAXSAT`, one past the end. The loop finishes without taking its `break`, so the index holds the bound, and the read happens after the loop. **Not flagged by any of the five engines, with CTU on; UBSan caught it in seconds.**
   - This is worth building because it is *purely syntactic* — no runtime values, no path sensitivity, no cross-TU reasoning. And it is **not** the ordering problem that blocked three earlier checks: this needs "is this reference outside the loop that bound the variable", which `hasAncestor`/`unless(hasAncestor(forStmt(equalsBoundNode(...))))` can express, not statement precedence, which matchers cannot.
