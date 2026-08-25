@@ -941,6 +941,17 @@ confidence = "medium"
 # when the loop ends without breaking. Medium rather than high: a plain
 # reassignment between the loop and the use is indistinguishable from a dead
 # store before it without statement order, which AST matchers cannot express.
+# An unused variable is a store nothing reads. Medium, matching the dead-store
+# rule for an unread initialisation: the compiler has proved the fact, but the
+# consequence is a wasted copy and a misleading loop rather than a memory
+# error. Its value here is the range-for case Clang SA cannot see -- a
+# reference binding stores nothing, so only the compiler reports it.
+[[rule]]
+tool = "clang-tidy"
+check = "clang-diagnostic-unused-variable"
+cwe = 563
+confidence = "medium"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-loop-index-escape"

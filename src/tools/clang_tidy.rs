@@ -68,10 +68,27 @@ pub fn tool() -> Tool {
 pub const DEFAULT_CHECKS: &str =
     "-*,clang-analyzer-*,bugprone-*,\
 clang-analyzer-optin.cplusplus.UninitializedObject,\
+clang-diagnostic-unused-variable,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
 cppcoreguidelines-pro-bounds-pointer-arithmetic,\
 cppcoreguidelines-pro-bounds-constant-array-index";
+
+/// Warnings Kordon turns on itself, whatever the project builds with.
+///
+/// A `clang-diagnostic-*` check only reports what the compilation actually
+/// warns about, so naming one in the check set does nothing unless the flag
+/// that produces it is on. Projects that build without `-Wall` therefore got
+/// silence rather than findings.
+///
+/// `-Wunused-variable` covers a case the analyzer misses. Clang SA reports the
+/// by-value form of an unused range-for variable as a dead store, because the
+/// copy is a store nothing reads -- but a reference binding stores nothing, so
+///
+///     for (const std::string &s : X) { n++; }   // `s` never used
+///
+/// went unreported. The compiler flags both.
+const FORCED_WARNINGS: &[&str] = &["-Wunused-variable"];
 
 // `cppcoreguidelines-pro-bounds-array-to-pointer-decay` was here and was
 // removed. Measured on the reference corpus: 622 findings, zero of which
@@ -269,6 +286,12 @@ fn run_shard(
         // Without this, findings in the project's own headers are dropped.
         .arg("-header-filter=.*")
         .arg("-quiet");
+
+    // Appended to the compilation, database or not, so the diagnostic checks
+    // above have something to report.
+    for warning in FORCED_WARNINGS {
+        cmd.arg(format!("--extra-arg={warning}"));
+    }
 
     if let Some(db) = compile_db {
         cmd.arg("-p").arg(db.path());
