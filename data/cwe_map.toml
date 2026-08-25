@@ -33,8 +33,33 @@ name = "Buffer Copy without Checking Size of Input (Classic Buffer Overflow)"
 tier = 1
 
 [[cwe]]
+id = 121
+name = "Stack-based Buffer Overflow"
+tier = 1
+
+[[cwe]]
+id = 122
+name = "Heap-based Buffer Overflow"
+tier = 1
+
+[[cwe]]
+id = 124
+name = "Buffer Underwrite (Buffer Underflow)"
+tier = 1
+
+[[cwe]]
 id = 125
 name = "Out-of-bounds Read"
+tier = 1
+
+[[cwe]]
+id = 126
+name = "Buffer Over-read"
+tier = 1
+
+[[cwe]]
+id = 127
+name = "Buffer Under-read"
 tier = 1
 
 [[cwe]]
