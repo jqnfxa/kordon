@@ -424,7 +424,7 @@ First measurement of the nine, 40 files each:
 | 483 block delimitation | **95.0%** | 0.0% | **+95.0** | was 0%; see below |
 | 680 overflow → buffer overflow | 66.7% | 18.3% | +48.3 | |
 | 665 improper initialisation | 36.0% | 4.5% | +31.5 | the `--ctu` class |
-| 369 divide by zero | 8.5% | 0.0% | +8.5 | low; `core.DivideZero` is a default checker |
+| 369 divide by zero | 40.4% | 0.6% | +39.8 | was 8.5%; a third of the suite is `float_`, where dividing by zero is not a defect |
 | 252 unchecked return | **0%** | 0.0% | 0 | |
 | 672 use after release | **0%** | 0.0% | 0 | |
 | 690 null deref from return | **0%** | 0.0% | 0 | |
@@ -441,6 +441,18 @@ First measurement of the nine, 40 files each:
 The first measurement of CWE-483 reported 100% recall — with the check not yet enabled. The accept set was `{483, 398, 561}`, and 398 is the tier-0 style bucket, so any unrelated style finding landing in a flawed function was credited. Narrowed to `{483}` the honest number appeared.
 
 **Third time an over-wide accept set has flattered a result** — CWE-197 crediting CWE-190, the by-check good side, and now this. **An equivalence entry is a claim that the other CWE means the same defect; write the narrow set and widen only with a reason.**
+
+## CWE-369 — 8.5% to 40.4%, and float division is not the defect (2026-08-26)
+
+`core.DivideZero` is a default Clang SA checker, already enabled, already mapped, and it works: it reports Juliet's `_zero_` family exactly. That family is where the whole 8.5% came from. What it cannot do is bound a divisor that arrived from `rand`, `fscanf` or a socket — five of the suite's six source families — and the corrected sink is simply `if (data != 0)`.
+
+`kordon-unchecked-divisor` reports an **integer** divisor that came from a call and is never compared to zero. Same three-clause shape as the index checks. **8.5% → 40.4%**, discrimination **+8.5 → +39.8**, at 0.6% false positives, and **zero across 169 real translation units**.
+
+**The integer restriction is the whole story on precision, and it is not a technicality.** Dividing a double by zero is not undefined behaviour — it yields an infinity. Without the restriction the check reported **62 positions across pkt-astronomia and rtklib_mod**, and every one inspected was floating point: `r = sqrt(r2); ppr[i] = p[i]/r;` in vendored SOFA. With it, zero.
+
+**40.4% is closer to the ceiling than it looks.** Six of the eighteen source families are `float_`, where there is no defect to find, so a third of the flawed functions counted against this CWE are cases the check is right to ignore. Juliet files them under 369 anyway — the same mislabelling as the `char` cases under CWE-190.
+
+Any comparison against zero is accepted as the guard, including `d == 0` used to skip. Deliberately generous: accepting a weak guard costs a missed defect, rejecting a real one costs a false positive on code that did check.
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 

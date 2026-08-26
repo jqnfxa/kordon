@@ -1085,6 +1085,14 @@ check = "kordon-unchecked-negative-index"
 cwe = 124
 confidence = "medium"
 
+# An integer divisor from a call with no zero test. core.DivideZero covers the
+# provable case; this covers the one where the value came from outside.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unchecked-divisor"
+cwe = 369
+confidence = "medium"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-one-sided-index-guard"

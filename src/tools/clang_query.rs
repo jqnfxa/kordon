@@ -85,6 +85,9 @@ pub enum Exemption {
     /// The mirror of `OneSidedIndexGuard`: bounded above, never checked for
     /// negative.
     UncheckedNegativeIndex,
+    /// Assembled whole: the divisor's source and the missing zero test have to
+    /// name the same variable.
+    UncheckedDivisor,
     /// Assembled whole, because the release must be recognised as releasing
     /// the same member that is being overwritten.
     ReinitWithoutFree,
@@ -125,6 +128,9 @@ impl QueryCheck {
         if self.exemption == Exemption::UncheckedNegativeIndex {
             return unchecked_negative_index_matcher();
         }
+        if self.exemption == Exemption::UncheckedDivisor {
+            return unchecked_divisor_matcher();
+        }
         if self.exemption == Exemption::TransferToNonOwner {
             return transfer_to_non_owner_matcher();
         }
@@ -149,6 +155,7 @@ impl QueryCheck {
             | Exemption::LoopIndexEscape
             | Exemption::OneSidedIndexGuard
             | Exemption::UncheckedNegativeIndex
+            | Exemption::UncheckedDivisor
             | Exemption::TransferToNonOwner => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
@@ -1489,6 +1496,70 @@ unless(hasAncestor(functionDecl(hasDescendant({sign_test}))))\
     )
 }
 
+/// An integer divisor that came from a call and is never compared to zero.
+///
+///     data = RAND32();
+///     printIntLine(100 / data);       // nothing says data != 0
+///
+/// and the corrected sink is `if (data != 0) { ... }`. `core.DivideZero`
+/// already reports the case where the divisor is provably zero -- Juliet's
+/// `_zero_` family, which is where CWE-369's whole 8.5% came from -- but it
+/// cannot bound a value that arrived from `rand`, `fscanf` or a socket, and
+/// those are five of the suite's six source families.
+///
+/// **Integer divisors only.** Dividing a double by zero is not undefined
+/// behaviour, it yields an infinity, so the question does not arise. That is
+/// not a technicality: without the restriction this check reported 62
+/// positions across pkt-astronomia and rtklib_mod, and every one inspected was
+/// a floating-point expression like `r = sqrt(r2); p[i]/r` in vendored SOFA.
+/// With it, **zero across both projects**.
+///
+/// Any comparison against zero counts as the guard, including `d == 0` used to
+/// skip and `d > 0`. That is deliberately generous: the cost of accepting a
+/// weak guard is a missed defect, and the cost of rejecting one is a false
+/// positive on code that did check.
+pub const UNCHECKED_DIVISOR: QueryCheck = QueryCheck {
+    id: "kordon-unchecked-divisor",
+    base: "", // built by matcher(); see Exemption::UncheckedDivisor
+    exemption: Exemption::UncheckedDivisor,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this divides by an integer that came from a call and is never compared to zero -- \
+integer division by zero is undefined behaviour",
+};
+
+fn unchecked_divisor_matcher() -> String {
+    let d = "declRefExpr(to(varDecl(equalsBoundNode(\"d\"))))";
+    let neg = "anyOf(integerLiteral(equals(0)), \
+unaryOperator(hasOperatorName(\"-\"), hasUnaryOperand(integerLiteral())))";
+    let zero_test = format!(
+        "binaryOperator(isComparisonOperator(), \
+hasEitherOperand(ignoringParenImpCasts({d})), \
+hasEitherOperand(ignoringParenImpCasts({neg})))"
+    );
+    let a_call = "anyOf(ignoringParenImpCasts(callExpr()), hasDescendant(callExpr()))";
+    let from_call = format!(
+        "anyOf(binaryOperator(hasOperatorName(\"=\"), \
+hasLHS(ignoringParenImpCasts({d})), hasRHS({a_call})), \
+declStmt(hasDescendant(varDecl(equalsBoundNode(\"d\"), hasInitializer({a_call})))), \
+callExpr(hasAnyArgument(ignoringParenImpCasts(unaryOperator(hasOperatorName(\"&\"), \
+hasUnaryOperand(ignoringParenImpCasts({d})))))))"
+    );
+
+    // `/=` and `%=` are CompoundAssignOperator, a BinaryOperator subclass, so
+    // one matcher covers both spellings.
+    format!(
+        "binaryOperator(hasAnyOperatorName(\"/\", \"%\", \"/=\", \"%=\"), \
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasRHS(ignoringParenImpCasts(declRefExpr(to(varDecl(hasLocalStorage(), \
+hasType(isInteger())).bind(\"d\"))))), \
+hasAncestor(functionDecl(hasDescendant({from_call}))), \
+unless(hasAncestor(functionDecl(hasDescendant({zero_test}))))\
+)"
+    )
+}
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -1504,6 +1575,7 @@ pub const CHECKS: &[QueryCheck] = &[
     LOOP_INDEX_ESCAPE,
     ONE_SIDED_INDEX_GUARD,
     UNCHECKED_NEGATIVE_INDEX,
+    UNCHECKED_DIVISOR,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -2187,4 +2259,23 @@ Match #2:\n\n\
         assert!(ONE_SIDED_INDEX_GUARD.matcher().contains("equalsBoundNode(\"arr\")"));
     }
 
+
+    /// Integer divisors only, and the reason is not a technicality.
+    #[test]
+    fn unchecked_divisor_is_about_integers_because_floats_do_not_trap() {
+        let m = UNCHECKED_DIVISOR.matcher();
+        assert!(!m.contains("allOf("));
+        // Dividing a double by zero yields an infinity, not undefined
+        // behaviour. Without this the check reported 62 positions across two
+        // real projects, nearly all `r = sqrt(x); p/r` in vendored SOFA.
+        assert!(m.contains("hasType(isInteger())"));
+        // Modulo traps the same way division does, and the compound forms are
+        // CompoundAssignOperator -- a BinaryOperator subclass, so one matcher
+        // covers all four spellings.
+        for op in ["\"/\"", "\"%\"", "\"/=\"", "\"%=\""] {
+            assert!(m.contains(op), "missing operator {op}");
+        }
+        // Any comparison against zero is accepted as the guard, deliberately.
+        assert!(m.contains("isComparisonOperator()"));
+    }
 }
