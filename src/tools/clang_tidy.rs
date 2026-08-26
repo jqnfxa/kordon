@@ -69,6 +69,7 @@ pub const DEFAULT_CHECKS: &str =
     "-*,clang-analyzer-*,bugprone-*,\
 clang-analyzer-optin.cplusplus.UninitializedObject,\
 clang-diagnostic-unused-variable,clang-diagnostic-return-stack-address,\
+clang-diagnostic-misleading-indentation,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
 cppcoreguidelines-pro-bounds-pointer-arithmetic,\
@@ -88,7 +89,12 @@ cppcoreguidelines-pro-bounds-constant-array-index";
 ///     for (const std::string &s : X) { n++; }   // `s` never used
 ///
 /// went unreported. The compiler flags both.
-const FORCED_WARNINGS: &[&str] = &["-Wunused-variable"];
+/// `-Wmisleading-indentation` is not in the default set either, and it is the
+/// only thing that reports CWE-483: `if (x) a; b;` where the indentation says
+/// `b` belongs to the `if` and the language says it does not. The goto-fail
+/// shape. Perfect discrimination on Juliet -- it fires on the flawed half and
+/// never on the corrected one.
+const FORCED_WARNINGS: &[&str] = &["-Wunused-variable", "-Wmisleading-indentation"];
 
 // `cppcoreguidelines-init-variables` looks like the next thing to remove and
 // is not. It flags every declaration without an initialiser, so on Juliet's

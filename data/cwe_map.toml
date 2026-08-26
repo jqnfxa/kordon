@@ -1051,6 +1051,15 @@ confidence = "medium"
 # reachable through any `clang-analyzer-*` checker, and CWE-562 measured 0%
 # without it. High confidence: the compiler has the whole function and is not
 # guessing.
+# Indentation that says one thing and the language another -- the goto-fail
+# shape. Medium, not high: the compiler has proved the formatting misleads, not
+# that the author meant the other reading.
+[[rule]]
+tool = "clang-tidy"
+check = "clang-diagnostic-misleading-indentation"
+cwe = 483
+confidence = "medium"
+
 [[rule]]
 tool = "clang-tidy"
 check = "clang-diagnostic-return-stack-address"

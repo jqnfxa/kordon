@@ -42,26 +42,32 @@ from collections import defaultdict
 # Restricted to Kordon's Tier 1 scope. The suite also covers injection and
 # access-control classes that are deliberately out of scope, and scoring those
 # would measure a promise Kordon never made.
-TARGETS = {
-    "CWE121_Stack_Based_Buffer_Overflow": 121,
-    "CWE122_Heap_Based_Buffer_Overflow": 122,
-    "CWE124_Buffer_Underwrite": 124,
-    "CWE126_Buffer_Overread": 126,
-    "CWE127_Buffer_Underread": 127,
-    "CWE190_Integer_Overflow": 190,
-    "CWE191_Integer_Underflow": 191,
-    "CWE369_Divide_By_Zero": 369,
-    "CWE401_Memory_Leak": 401,
-    "CWE415_Double_Free": 415,
-    "CWE416_Use_After_Free": 416,
-    "CWE457_Use_of_Uninitialized_Variable": 457,
-    "CWE476_NULL_Pointer_Dereference": 476,
-    "CWE562_Return_of_Stack_Variable_Address": 562,
-    "CWE563_Unused_Variable": 563,
-    "CWE590_Free_Memory_Not_on_Heap": 590,
-    "CWE762_Mismatched_Memory_Management_Routines": 762,
-    "CWE775_Missing_Release_of_File_Descriptor_or_Handle": 775,
+# The CWEs Kordon claims, matched against a directory's numeric prefix rather
+# than its full name.
+#
+# This was a name -> id table, and `CWE369_Divide_By_Zero` did not match the
+# suite's `CWE369_Divide_by_Zero`. The scorer said "not present in this suite"
+# and moved on, so that CWE simply never appeared in any baseline -- a silent
+# miss of exactly the kind this file keeps finding. The number is the only part
+# that is stable.
+TARGET_CWES = {
+    121, 122, 124, 126, 127,      # bounds
+    190, 191, 197, 680,           # integer
+    252, 369, 476, 690,           # unchecked value / null / divide
+    401, 415, 416, 590, 762, 775, # memory and resource lifetime
+    457, 665,                     # initialisation
+    483, 562, 563, 672, 843,      # misc in-scope
 }
+
+
+def target_dirs(testcases):
+    """Directory -> CWE, for every directory whose id is in scope."""
+    out = {}
+    for name in sorted(os.listdir(testcases)):
+        m = re.match(r"CWE(\d+)_", name)
+        if m and int(m.group(1)) in TARGET_CWES:
+            out[name] = int(m.group(1))
+    return out
 
 # CWEs that count as reporting the target. A tool that calls a stack overflow
 # CWE-787 rather than CWE-121 has found the defect; insisting on the exact id
@@ -90,6 +96,18 @@ EQUIVALENT = {
     762: {762, 763, 590},
     775: {775, 772, 404},
     369: {369},
+    197: {197, 190, 191},
+    252: {252, 690, 476},
+    # Only 483. Including the tier-0 style bucket (398) and dead code (561)
+    # credited every unrelated style finding that happened to land in the
+    # flawed function -- it read 100% recall before the check that actually
+    # reports this CWE was even enabled.
+    483: {483},
+    665: {665, 457, 824, 908},
+    672: {672, 416, 415},
+    680: {680, 190, 122, 787, 788, 119},
+    690: {690, 476, 252},
+    843: {843, 704},
 }
 
 # Any function definition at file scope. The name decides whether it is ground
@@ -210,7 +228,7 @@ def main():
     if not os.path.isdir(testcases):
         sys.exit(f"no testcases/ under {args.root}")
 
-    wanted = {d: c for d, c in TARGETS.items()
+    wanted = {d: c for d, c in target_dirs(testcases).items()
               if not args.cwe or c in args.cwe}
 
     results = {}

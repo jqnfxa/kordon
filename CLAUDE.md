@@ -413,6 +413,35 @@ The compile database carries `-I <support>` while its `directory` field is the s
 
 This one also produced a *false conclusion* before it was found: the numbers reverted to baseline after an exemption was added, and the exemption got the blame. It was the path.
 
+## Nine CWEs that had no baseline at all (2026-08-26)
+
+`scripts/score-juliet.py` matched Juliet directories by full name, and `CWE369_Divide_By_Zero` does not match the suite's `CWE369_Divide_by_Zero`. The scorer printed "not present in this suite" and moved on, so that CWE never appeared in any baseline. It now matches on the **number**, which is the only stable part of the name, and all 26 in-scope directories resolve.
+
+First measurement of the nine, 40 files each:
+
+| CWE | recall | FP | discrim | |
+|---|---|---|---|---|
+| 483 block delimitation | **95.0%** | 0.0% | **+95.0** | was 0%; see below |
+| 680 overflow → buffer overflow | 66.7% | 18.3% | +48.3 | |
+| 665 improper initialisation | 36.0% | 4.5% | +31.5 | the `--ctu` class |
+| 369 divide by zero | 8.5% | 0.0% | +8.5 | low; `core.DivideZero` is a default checker |
+| 252 unchecked return | **0%** | 0.0% | 0 | |
+| 672 use after release | **0%** | 0.0% | 0 | |
+| 690 null deref from return | **0%** | 0.0% | 0 | |
+| 843 type confusion | **0%** | 0.0% | 0 | |
+
+### CWE-483 — 0% to 95%, and a third `clang-diagnostic-*` win
+
+`-Wmisleading-indentation` reports exactly this and nothing else does: `if (x) a; b;` where the indentation says `b` belongs to the `if` and the language says it does not — the goto-fail shape. **Not on by default**, so Kordon turns it on itself, the same as `-Wunused-variable` and `-Wreturn-stack-address`. That is three for three: **every `clang-diagnostic-*` check named so far has closed a real gap, and Kordon names only three of them.** The rest of that namespace is unexplored.
+
+95.0% recall at **0% false positives**, the best discrimination of any CWE here, and **zero findings across 169 real translation units**.
+
+### It read 100% before the check existed
+
+The first measurement of CWE-483 reported 100% recall — with the check not yet enabled. The accept set was `{483, 398, 561}`, and 398 is the tier-0 style bucket, so any unrelated style finding landing in a flawed function was credited. Narrowed to `{483}` the honest number appeared.
+
+**Third time an over-wide accept set has flattered a result** — CWE-197 crediting CWE-190, the by-check good side, and now this. **An equivalence entry is a claim that the other CWE means the same defect; write the narrow set and widen only with a reason.**
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
