@@ -1065,6 +1065,23 @@ check = "open-file-descriptor"
 cwe = 775
 confidence = "high"
 
+# An index from a call, sign-checked but never bounded. Medium: the "never
+# bounded" half is scoped to the enclosing function, so a bound enforced by a
+# callee reads as a defect.
+# The mirror: bounded above, never checked for negative. CWE-124 is the
+# precise id -- an index below zero writes *before* the buffer.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unchecked-negative-index"
+cwe = 124
+confidence = "medium"
+
+[[rule]]
+tool = "kordon-query"
+check = "kordon-one-sided-index-guard"
+cwe = 129
+confidence = "medium"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-loop-index-escape"

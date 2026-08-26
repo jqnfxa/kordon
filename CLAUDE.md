@@ -378,6 +378,41 @@ Filed under CWE-119 it made the bounds count mean "out of range **or** merely wr
 
 **So 100% is not the target, and a per-layer number read alone is misleading.** The clearest case is CWE-122: the static layer scores 29.2%, and the shapes it misses — runtime lengths, loops, concatenation — are exactly the ones ASan catches, at **85.7% of runnable cases with zero false positives**. The layers are complementary by construction, which is the argument for running both and the reason both baselines are kept.
 
+## Two checks for an index nobody bounded (2026-08-26)
+
+The `rand`/`fscanf` families are ~71% of Juliet's integer and index CWEs, and the dynamic layer cannot be relied on for them: the flawed branch is taken only on the runs where the value happens to land in range, so a sanitizer reports nothing on the others. **The code is wrong either way, which is what static analysis is for.** Neither shape was reported by any engine Kordon runs.
+
+| | shape | id | CWE |
+|---|---|---|---|
+| overflow | `if (data >= 0) buffer[data]` — sign tested, range never | `kordon-one-sided-index-guard` | 129 |
+| underwrite | `if (data < 10) buffer[data]` — range tested, sign never | `kordon-unchecked-negative-index` | 124 |
+
+Effect on the bounds family, 40 files per CWE: **121 40.9→45.5%, 122 29.2→31.2%, 124 71.1→75.6%, 126 2.3→11.4%**, 127 unchanged. Nine more flawed functions, **false positives unchanged at 2 of 583**, and **zero across 169 real translation units** (pkt-astronomia's 159 and rtklib_mod's 10).
+
+**The discriminator is the operand, not the operator.** `i >= 0` and `i < 0` are both sign checks — one guards a block, the other exits early — and `i < 10` and `i >= 10` are both bounds. Keying on the operator catches the guard idiom and misses the early-exit one, which is how real code usually writes it.
+
+**Three clauses, and the second is what makes them usable:**
+- the index is filled from a call — an external value;
+- **without that clause the checks fire on every loop counter ever compared to zero: 160 positions across the two real projects, 56 of them in vendored SOFA**;
+- nothing tests the other side.
+
+### The two directions are not mirror images, and both differences were measured
+
+- **Signedness.** A `size_t` cannot be negative, so the underwrite check requires a signed index. Without it, every bounded loop over an unsigned counter matches.
+- **"Bounded by its own call" exempts the upper bound only.** `n = read(fd, buf, sizeof buf - 1); buf[n] = 0;` is safe from overflow — the bound is the argument handed to `read`, which no comparison-based check can see — and it is a *genuine underwrite*, because `read` returns **-1** on error. The same idiom is an exemption in one direction and the defect in the other. A test asserts the clause is present in one matcher and absent from the other.
+
+### `hasDescendant` does not match the node itself — the third time
+
+`hasRHS(hasDescendant(callExpr()))` missed `data = atoi(buf)`, where the call **is** the right-hand side, and matched `data = RAND32()` only because that macro expands to a call nested in an expression. So the check worked on one Juliet source family and silently missed the rest; CWE-126 read 2.3% instead of 11.4%. The same trap has now cost a measurement three times — `hasCondition(hasDescendant(...))` in the loop-index check, and twice here. **Write `anyOf(ignoringParenImpCasts(X), hasDescendant(X))` by default.**
+
+`fscanf(stdin, "%d", &data)` needed a third spelling again: the value arrives through an out-parameter and is never assigned.
+
+### Scorer bug #5: a relative Juliet root measures one engine
+
+The compile database carries `-I <support>` while its `directory` field is the source file's own folder, so a relative root makes the include resolve against *that* directory and every unit dies with `'std_testcase.h' file not found`. **The scorer still prints numbers, because cppcheck needs no includes** — so the run looks fine and quietly measures one engine instead of four. Measured: CWE-121 reads 40.9% that way and 45.5% correctly. Both scorers now `abspath` the root.
+
+This one also produced a *false conclusion* before it was found: the numbers reverted to baseline after an exemption was added, and the exemption got the blame. It was the path.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the

@@ -79,6 +79,12 @@ pub enum Exemption {
     /// Assembled whole: every clause has to back-reference the same loop
     /// variable, and the exemptions describe the two ways of bounding it.
     LoopIndexEscape,
+    /// Assembled whole: the source, the sign test and the missing bound test
+    /// all have to name the same index variable.
+    OneSidedIndexGuard,
+    /// The mirror of `OneSidedIndexGuard`: bounded above, never checked for
+    /// negative.
+    UncheckedNegativeIndex,
     /// Assembled whole, because the release must be recognised as releasing
     /// the same member that is being overwritten.
     ReinitWithoutFree,
@@ -113,6 +119,12 @@ impl QueryCheck {
         if self.exemption == Exemption::LoopIndexEscape {
             return loop_index_escape_matcher();
         }
+        if self.exemption == Exemption::OneSidedIndexGuard {
+            return one_sided_index_guard_matcher();
+        }
+        if self.exemption == Exemption::UncheckedNegativeIndex {
+            return unchecked_negative_index_matcher();
+        }
         if self.exemption == Exemption::TransferToNonOwner {
             return transfer_to_non_owner_matcher();
         }
@@ -135,6 +147,8 @@ impl QueryCheck {
             | Exemption::ReinitWithoutFree
             | Exemption::DeadStore
             | Exemption::LoopIndexEscape
+            | Exemption::OneSidedIndexGuard
+            | Exemption::UncheckedNegativeIndex
             | Exemption::TransferToNonOwner => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
@@ -1262,6 +1276,219 @@ unless(hasAncestor(functionDecl(hasDescendant({reassigned}))))\
     )
 }
 
+/// An index from outside the program, checked for sign but never for range.
+///
+/// The shape, and the largest single family in Juliet's buffer CWEs:
+///
+///     data = RAND32();                    // unbounded, from a call
+///     if (data >= 0) {                    // rejects negative...
+///         buffer[data] = 1;               // ...never asks if it is < 10
+///     }
+///
+/// Worth a rule of its own because **the dynamic layer cannot be relied on
+/// here**. Juliet seeds with `srand(time(NULL))`, so the flawed branch is taken
+/// only on the runs where `rand()` happens to come back positive; a sanitizer
+/// reports nothing on the others and the defect looks absent. The code is
+/// wrong either way, which is exactly the case static analysis exists for.
+///
+/// Three clauses, and the second is the one that makes it usable:
+///
+///   * the index is **assigned from a call** -- an external value. Without
+///     this the check fires on every loop counter that is ever compared to
+///     zero: 160 positions across pkt-astronomia and rtklib_mod, 56 of them in
+///     vendored SOFA reference code.
+///   * something tests the index against **zero or a negative literal**. That
+///     is a *sign* check, not a bound.
+///   * nothing tests it against anything else. A comparison whose other side
+///     is positive or symbolic is a bound, and the defect is gone.
+///
+/// The discriminator is what the index is compared *against*, not the
+/// operator. `i >= 0` and `i < 0` are both sign checks -- the first guards a
+/// block, the second exits early -- and `i < 10` and `i >= 10` are both
+/// bounds. Keying on the operator catches the guard idiom and misses the
+/// early-exit one, which is how real code usually writes it.
+///
+/// Measured: catches both idioms, and **zero positions across 169 real
+/// translation units** (pkt-astronomia's 159 and rtklib_mod's 10).
+///
+/// Known limit: "nothing tests it" is scoped to the enclosing function, so a
+/// bound enforced by a callee is invisible and would read as a defect. Hence
+/// medium rather than high.
+pub const ONE_SIDED_INDEX_GUARD: QueryCheck = QueryCheck {
+    id: "kordon-one-sided-index-guard",
+    base: "", // built by matcher(); see Exemption::OneSidedIndexGuard
+    exemption: Exemption::OneSidedIndexGuard,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this indexes with a value that came from a call and is only checked against zero -- \
+the sign is tested, the range never is",
+};
+
+fn one_sided_index_guard_matcher() -> String {
+    let idx = "declRefExpr(to(varDecl(equalsBoundNode(\"idx\"))))";
+
+    // Zero or a negative literal: the other side of a *sign* test.
+    let neg = "anyOf(integerLiteral(equals(0)), \
+unaryOperator(hasOperatorName(\"-\"), hasUnaryOperand(integerLiteral())))";
+
+    // Relational, not equality. A sign check *orders* the value against zero;
+    // `n == 0` is an error check, and treating it as one flagged the common
+    // `n = recv(sock, buf, sizeof buf - 1, 0); buf[n] = 0;` -- where the bound
+    // is the argument handed to recv, not a comparison, and the index is in
+    // range. That idiom was three of the false positives here.
+    let sign_test = format!(
+        "binaryOperator(hasAnyOperatorName(\">=\", \">\", \"<\", \"<=\"), \
+hasEitherOperand(ignoringParenImpCasts({idx})), \
+hasEitherOperand(ignoringParenImpCasts({neg})))"
+    );
+    // Any comparison against something that is not zero-or-negative. This is
+    // the bound, whether it reads `i < 10`, `i >= n` or `n > i`.
+    let bound_test = format!(
+        "binaryOperator(isComparisonOperator(), \
+hasEitherOperand(ignoringParenImpCasts({idx})), \
+unless(hasEitherOperand(ignoringParenImpCasts({neg}))))"
+    );
+    // Filled from a call, by initialiser or by assignment. `hasDescendant`
+    // rather than a direct match so `(int)rand()` and `RAND32()` -- a macro
+    // wrapping two calls -- both count.
+    // `anyOf(the node itself, a descendant)` in all three places. A call is
+    // usually *is* the right-hand side rather than sitting under it --
+    // `data = atoi(buf)` -- and `hasDescendant` alone matches only the nested
+    // spelling. It happened to work on `data = RAND32()` because that macro
+    // expands to a call inside an expression, which is exactly why the gap
+    // survived the first measurement.
+    //
+    // The third clause is the out-parameter form: `fscanf(stdin, "%d", &data)`
+    // never assigns the index at all, and that is a third of Juliet's
+    // unbounded-index sources as well as ordinary C.
+    let a_call = "anyOf(ignoringParenImpCasts(callExpr()), hasDescendant(callExpr()))";
+    let from_call = format!(
+        "anyOf(binaryOperator(hasOperatorName(\"=\"), \
+hasLHS(ignoringParenImpCasts({idx})), hasRHS({a_call})), \
+declStmt(hasDescendant(varDecl(equalsBoundNode(\"idx\"), hasInitializer({a_call})))), \
+callExpr(hasAnyArgument(ignoringParenImpCasts(unaryOperator(hasOperatorName(\"&\"), \
+hasUnaryOperand(ignoringParenImpCasts({idx})))))))"
+    );
+
+    // The call that produced the index was handed this very buffer, so its
+    // length argument is the bound:
+    //
+    //     n = read(fd, buf, sizeof buf - 1);
+    //     buf[n] = 0;                          // in range, by recv's contract
+    //
+    // One of the most common idioms in C, and the bound is an argument rather
+    // than a comparison, so nothing else here can see it. Scoped to the same
+    // array the subscript indexes -- a call given some *other* buffer says
+    // nothing about this one.
+    let bounded_by_its_own_call = format!(
+        "binaryOperator(hasOperatorName(\"=\"), hasLHS(ignoringParenImpCasts({idx})), \
+hasRHS(hasDescendant(callExpr(hasAnyArgument(ignoringParenImpCasts(\
+declRefExpr(to(varDecl(equalsBoundNode(\"arr\"))))))))))"
+    );
+    let bounded_by_its_own_init = format!(
+        "declStmt(hasDescendant(varDecl(equalsBoundNode(\"idx\"), \
+hasInitializer(hasDescendant(callExpr(hasAnyArgument(ignoringParenImpCasts(\
+declRefExpr(to(varDecl(equalsBoundNode(\"arr\"))))))))))))"
+    );
+
+    format!(
+        "arraySubscriptExpr(\
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasBase(ignoringParenImpCasts(declRefExpr(to(varDecl().bind(\"arr\"))))), \
+hasIndex(ignoringParenImpCasts(declRefExpr(to(varDecl(hasLocalStorage()).bind(\"idx\"))))), \
+hasAncestor(functionDecl(hasDescendant({from_call}))), \
+hasAncestor(functionDecl(hasDescendant({sign_test}))), \
+unless(hasAncestor(functionDecl(hasDescendant({bound_test})))), \
+unless(hasAncestor(functionDecl(hasDescendant({bounded_by_its_own_call})))), \
+unless(hasAncestor(functionDecl(hasDescendant({bounded_by_its_own_init}))))\
+)"
+    )
+}
+
+/// The mirror of [`ONE_SIDED_INDEX_GUARD`]: bounded above, never checked for
+/// negative.
+///
+/// Juliet's CWE-124 keeps its whole `CWE839` family in this shape:
+///
+///     data = RAND32();
+///     if (data < 10) {                    // rejects too-large...
+///         buffer[data] = 1;               // ...never asks if it is negative
+///     }
+///
+/// and the corrected sink is `if (data >= 0 && data < 10)`. An underwrite is
+/// as much a defect as an overwrite, and neither engine Kordon runs reports
+/// this one.
+///
+/// Two differences from the overflow direction, both deliberate:
+///
+///   * **The index must be a signed type.** A `size_t` cannot be negative, so
+///     the whole question is meaningless there, and flagging it would fire on
+///     every bounded loop over an unsigned counter.
+///   * **The "bounded by its own call" exemption does not apply.** That
+///     exemption is sound for the upper bound -- `read` writes at most the
+///     length it was given -- and wrong for the lower one, because `read`,
+///     `recv` and friends return **-1** on error. `n = read(fd, buf, len);
+///     buf[n] = 0;` with no check *is* the underwrite this check is for.
+pub const UNCHECKED_NEGATIVE_INDEX: QueryCheck = QueryCheck {
+    id: "kordon-unchecked-negative-index",
+    base: "", // built by matcher(); see Exemption::UncheckedNegativeIndex
+    exemption: Exemption::UncheckedNegativeIndex,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this indexes with a signed value that came from a call and is bounded above but \
+never tested for negative -- an index below zero writes before the buffer",
+};
+
+fn unchecked_negative_index_matcher() -> String {
+    let idx = "declRefExpr(to(varDecl(equalsBoundNode(\"idx\"))))";
+    let neg = "anyOf(integerLiteral(equals(0)), \
+unaryOperator(hasOperatorName(\"-\"), hasUnaryOperand(integerLiteral())))";
+
+    // Same two shapes as the overflow direction, with the roles swapped: here
+    // the bound is what exists and the sign test is what is missing.
+    let sign_test = format!(
+        "binaryOperator(hasAnyOperatorName(\">=\", \">\", \"<\", \"<=\"), \
+hasEitherOperand(ignoringParenImpCasts({idx})), \
+hasEitherOperand(ignoringParenImpCasts({neg})))"
+    );
+    let bound_test = format!(
+        "binaryOperator(isComparisonOperator(), \
+hasEitherOperand(ignoringParenImpCasts({idx})), \
+unless(hasEitherOperand(ignoringParenImpCasts({neg}))))"
+    );
+    // `anyOf(the node itself, a descendant)` in all three places. A call is
+    // usually *is* the right-hand side rather than sitting under it --
+    // `data = atoi(buf)` -- and `hasDescendant` alone matches only the nested
+    // spelling. It happened to work on `data = RAND32()` because that macro
+    // expands to a call inside an expression, which is exactly why the gap
+    // survived the first measurement.
+    //
+    // The third clause is the out-parameter form: `fscanf(stdin, "%d", &data)`
+    // never assigns the index at all, and that is a third of Juliet's
+    // unbounded-index sources as well as ordinary C.
+    let a_call = "anyOf(ignoringParenImpCasts(callExpr()), hasDescendant(callExpr()))";
+    let from_call = format!(
+        "anyOf(binaryOperator(hasOperatorName(\"=\"), \
+hasLHS(ignoringParenImpCasts({idx})), hasRHS({a_call})), \
+declStmt(hasDescendant(varDecl(equalsBoundNode(\"idx\"), hasInitializer({a_call})))), \
+callExpr(hasAnyArgument(ignoringParenImpCasts(unaryOperator(hasOperatorName(\"&\"), \
+hasUnaryOperand(ignoringParenImpCasts({idx})))))))"
+    );
+
+    format!(
+        "arraySubscriptExpr(\
+unless(isExpansionInSystemHeader()), \
+unless(isInTemplateInstantiation()), \
+hasIndex(ignoringParenImpCasts(declRefExpr(to(varDecl(hasLocalStorage(), \
+hasType(isSignedInteger())).bind(\"idx\"))))), \
+hasAncestor(functionDecl(hasDescendant({from_call}))), \
+hasAncestor(functionDecl(hasDescendant({bound_test}))), \
+unless(hasAncestor(functionDecl(hasDescendant({sign_test}))))\
+)"
+    )
+}
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -1275,6 +1502,8 @@ pub const CHECKS: &[QueryCheck] = &[
     DEAD_STORE,
     TRANSFER_TO_NON_OWNER,
     LOOP_INDEX_ESCAPE,
+    ONE_SIDED_INDEX_GUARD,
+    UNCHECKED_NEGATIVE_INDEX,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1911,4 +2140,51 @@ Match #2:\n\n\
         // exemption is scoped to statements outside it.
         assert!(m.contains("unless(hasAncestor(forStmt(hasIncrement("));
     }
+
+    /// The discriminator is what the index is compared *against*, not the
+    /// operator, and the index must come from a call.
+    #[test]
+    fn one_sided_index_guard_keys_on_the_operand_not_the_operator() {
+        let m = ONE_SIDED_INDEX_GUARD.matcher();
+        assert!(!m.contains("allOf("));
+        // Zero and negative literals are the sign side. Keying on `>=` alone
+        // would catch `if (data >= 0)` and miss `if (data < 0) return;`, which
+        // is how real code usually writes the same defect.
+        assert!(m.contains("integerLiteral(equals(0))"));
+        assert!(m.contains("isComparisonOperator()"));
+        // The index must be filled from a call. Without it the check fired on
+        // every loop counter ever compared to zero -- 160 positions across two
+        // real projects, 56 of them in vendored reference code.
+        //
+        // Both spellings, and this is the assertion that matters: a call
+        // usually *is* the right-hand side rather than sitting under it, so
+        // `hasDescendant` alone matched `data = RAND32()` -- a macro expanding
+        // to a nested call -- and missed `data = atoi(buf)` entirely.
+        assert!(m.contains("anyOf(ignoringParenImpCasts(callExpr()), hasDescendant(callExpr()))"));
+        // And the out-parameter form: fscanf(stdin, "%d", &data) never assigns
+        // the index at all.
+        assert!(m.contains("hasOperatorName(\"&\")"));
+        // And a comparison against anything that is not zero-or-negative
+        // exempts, because that is a bound.
+        assert!(m.contains("unless(hasAncestor(functionDecl(hasDescendant(binaryOperator("));
+    }
+
+    /// The underwrite direction is not a copy of the overflow one with the
+    /// clauses swapped: two things differ and both were found by measuring.
+    #[test]
+    fn unchecked_negative_index_differs_from_its_mirror_deliberately() {
+        let m = UNCHECKED_NEGATIVE_INDEX.matcher();
+        assert!(!m.contains("allOf("));
+        // A size_t cannot be negative, so the question is meaningless there.
+        // Without this it fires on every bounded loop over an unsigned counter.
+        assert!(m.contains("hasType(isSignedInteger())"));
+        // And the "bounded by its own call" exemption must NOT appear here.
+        // It is sound for the upper bound -- read writes at most the length it
+        // was given -- and wrong for the lower one, because read returns -1 on
+        // error, which is precisely this defect.
+        assert!(!m.contains("equalsBoundNode(\"arr\")"));
+        // The overflow direction has it.
+        assert!(ONE_SIDED_INDEX_GUARD.matcher().contains("equalsBoundNode(\"arr\")"));
+    }
+
 }

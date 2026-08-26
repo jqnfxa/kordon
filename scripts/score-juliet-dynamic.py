@@ -233,6 +233,14 @@ def main():
     ap.add_argument("--json-out")
     args = ap.parse_args()
 
+    # Absolute, always. The compile database carries `-I <support>` while its
+    # `directory` field is the source's own folder, so a relative root makes
+    # the include path resolve against *that* directory and every unit fails
+    # with "std_testcase.h file not found". The scorer still prints numbers --
+    # cppcheck needs no includes -- so the run looks fine and quietly measures
+    # one engine instead of four. Measured: CWE-121 read 40.9% that way and
+    # 43.2% with an absolute root.
+    args.root = os.path.abspath(args.root)
     testcases = os.path.join(args.root, "testcases")
     support = os.path.join(args.root, "testcasesupport")
 
