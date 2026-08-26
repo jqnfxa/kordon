@@ -425,7 +425,7 @@ First measurement of the nine, 40 files each:
 | 680 overflow → buffer overflow | 66.7% | 18.3% | +48.3 | |
 | 665 improper initialisation | 36.0% | 4.5% | +31.5 | the `--ctu` class |
 | 369 divide by zero | 56.0% | 1.1% | +54.9 | was 8.5%; float cases excluded, see below |
-| 252 unchecked return | **0%** | 0.0% | 0 | |
+| 252 unchecked return | 70.0% | 0.0% | +70.0 | was 0%; 20.0% surfaced |
 | 672 use after release | **0%** | 0.0% | 0 | |
 | 690 null deref from return | **0%** | 0.0% | 0 | |
 | 843 type confusion | **0%** | 0.0% | 0 | |
@@ -457,6 +457,20 @@ The scorer now has an `EXCLUDED` table for exactly this, and **the count and the
 **The bar for that table is that the defect is absent, checkable from the standard — never that Kordon happens to miss it.** The CWE-190 `char` cases are left in for the same reason in reverse: the boundary there is less clear-cut, so removing them would be closer to score-gaming than to accuracy.
 
 Any comparison against zero is accepted as the guard, including `d == 0` used to skip. Deliberately generous: accepting a weak guard costs a missed defect, rejecting a real one costs a false positive on code that did check.
+
+## CWE-252 — 0% to 70%, and a curated list beats the standard one 12:1
+
+`cert-err33-c` reports this and discriminates perfectly on Juliet, and it was simply not enabled. Turning it on takes CWE-252 from **0% to 70.0% recall at zero false positives, +70.0 discrimination**.
+
+But it treats the whole standard library alike, and on real code that shows: 12 positions on pkt-astronomia, of which **9 are `fclose` and 2 are `fprintf`**. Ignoring those is near-universal and almost never matters. So `cert-err33-c` is mapped **low** — counted, not detailed.
+
+`bugprone-unused-return-value` takes a function list, which is Kordon's to write, and one is now in `CHECKED_FUNCTIONS` at **medium**. The rule for adding a name: **ignoring the result must leave the program using a value it did not compute.** Parsers and readers qualify; things whose failure only means "output did not appear" do not.
+
+Measured, that list reports **one** position on pkt-astronomia where `cert-err33-c` reports twelve — and the one is a real defect: `sscanf(columns[idx_v_rad], "%lf", &entry.v_rad);` with the result discarded, so a failed parse silently leaves the field at whatever it held.
+
+**`snprintf` failed that rule and was removed rather than tolerated.** With it on the list, 19 of 20 surfaced positions on pkt-astronomia were `snprintf` inside one error-reporting macro. Removing it cost 2.5 points of surfaced recall on Juliet and removed 19 real-code false positives — 20 surfaced down to 1.
+
+This is the first time the two tiers have been used to split one defect class by *which function* is involved rather than by which check found it, and it is the shape to reuse: the broad check counts, the curated one reports.
 
 ## Working plan: close the Juliet gaps, CWE by CWE
 

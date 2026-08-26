@@ -73,7 +73,7 @@ clang-diagnostic-misleading-indentation,\
 cppcoreguidelines-special-member-functions,cppcoreguidelines-init-variables,\
 cppcoreguidelines-narrowing-conversions,cppcoreguidelines-owning-memory,\
 cppcoreguidelines-pro-bounds-pointer-arithmetic,\
-cppcoreguidelines-pro-bounds-constant-array-index";
+cppcoreguidelines-pro-bounds-constant-array-index,cert-err33-c";
 
 /// Warnings Kordon turns on itself, whatever the project builds with.
 ///
@@ -95,6 +95,28 @@ cppcoreguidelines-pro-bounds-constant-array-index";
 /// shape. Perfect discrimination on Juliet -- it fires on the flawed half and
 /// never on the corrected one.
 const FORCED_WARNINGS: &[&str] = &["-Wunused-variable", "-Wmisleading-indentation"];
+
+/// Functions whose return value is dangerous to ignore, for
+/// `bugprone-unused-return-value`.
+///
+/// Kordon's own list, and the point of writing one is precision.
+/// `cert-err33-c` treats the whole standard library alike: on
+/// pkt-astronomia it reports 12 positions, of which 9 are `fclose` and 2 are
+/// `fprintf` -- ignoring those is near-universal and almost never matters.
+/// This list reports **one** position on the same code, and that one is a real
+/// defect: `sscanf(columns[i], "%lf", &entry.v_rad);` with the result
+/// discarded, so a failed parse silently leaves the field at whatever it held.
+///
+/// The rule for adding a name here: ignoring the result must leave the program
+/// using a value it did not compute. Parsers and readers qualify; things whose
+/// failure only means "output did not appear" do not.
+/// Not `snprintf`: its result says the output was truncated, which is a
+/// different question from using an uncomputed value, and it is the single
+/// noisiest name here -- 19 of 20 surfaced positions on pkt-astronomia were
+/// `snprintf` inside one error-reporting macro. It failed the rule above and
+/// was removed rather than tolerated.
+const CHECKED_FUNCTIONS: &str = "::fgets;::fread;::fscanf;::sscanf;::scanf;\
+::realloc;::strtol;::strtoul;::strtod";
 
 // `cppcoreguidelines-init-variables` looks like the next thing to remove and
 // is not. It flags every declaration without an initialiser, so on Juliet's
@@ -312,6 +334,12 @@ fn run_shard(
     for warning in FORCED_WARNINGS {
         cmd.arg(format!("--extra-arg={warning}"));
     }
+
+    // `-checks` is passed separately and wins, so this only supplies options.
+    cmd.arg(format!(
+        "-config={{CheckOptions: [{{key: bugprone-unused-return-value.CheckedFunctions, \
+value: \"{CHECKED_FUNCTIONS}\"}}]}}"
+    ));
 
     if let Some(db) = compile_db {
         cmd.arg("-p").arg(db.path());

@@ -1054,6 +1054,33 @@ confidence = "medium"
 # Indentation that says one thing and the language another -- the goto-fail
 # shape. Medium, not high: the compiler has proved the formatting misleads, not
 # that the author meant the other reading.
+# The curated half: functions where ignoring the result leaves the program
+# using a value it did not compute. Medium, because that is a defect rather
+# than a habit -- and measured, it reports one position on pkt-astronomia where
+# cert-err33-c reports twelve, and that one is real.
+[[rule]]
+tool = "clang-tidy"
+check = "bugprone-unused-return-value"
+cwe = 252
+confidence = "medium"
+
+# Ignoring a standard-library return value. Low, and the reason is what it
+# flags in practice rather than what it flags in Juliet: on pkt-astronomia the
+# mix is 9 fclose, 2 fprintf and 1 sscanf. Only the sscanf is clearly a defect
+# -- not knowing whether a parse succeeded means using whatever was there
+# before -- while ignoring fclose is near-universal and ignoring fprintf almost
+# never matters. CERT ERR33-C treats one list of functions alike and the check
+# cannot tell them apart, so this is a risk pattern.
+#
+# A curated function list via bugprone-unused-return-value would let the
+# dangerous half surface at medium. That list is Kordon's to write and has not
+# been written.
+[[rule]]
+tool = "clang-tidy"
+check = "cert-err33-c"
+cwe = 252
+confidence = "low"
+
 [[rule]]
 tool = "clang-tidy"
 check = "clang-diagnostic-misleading-indentation"
