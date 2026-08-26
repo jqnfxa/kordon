@@ -424,7 +424,7 @@ First measurement of the nine, 40 files each:
 | 483 block delimitation | **95.0%** | 0.0% | **+95.0** | was 0%; see below |
 | 680 overflow → buffer overflow | 66.7% | 18.3% | +48.3 | |
 | 665 improper initialisation | 36.0% | 4.5% | +31.5 | the `--ctu` class |
-| 369 divide by zero | 40.4% | 0.6% | +39.8 | was 8.5%; a third of the suite is `float_`, where dividing by zero is not a defect |
+| 369 divide by zero | 56.0% | 1.1% | +54.9 | was 8.5%; float cases excluded, see below |
 | 252 unchecked return | **0%** | 0.0% | 0 | |
 | 672 use after release | **0%** | 0.0% | 0 | |
 | 690 null deref from return | **0%** | 0.0% | 0 | |
@@ -450,7 +450,11 @@ The first measurement of CWE-483 reported 100% recall — with the check not yet
 
 **The integer restriction is the whole story on precision, and it is not a technicality.** Dividing a double by zero is not undefined behaviour — it yields an infinity. Without the restriction the check reported **62 positions across pkt-astronomia and rtklib_mod**, and every one inspected was floating point: `r = sqrt(r2); ppr[i] = p[i]/r;` in vendored SOFA. With it, zero.
 
-**40.4% is closer to the ceiling than it looks.** Six of the eighteen source families are `float_`, where there is no defect to find, so a third of the flawed functions counted against this CWE are cases the check is right to ignore. Juliet files them under 369 anyway — the same mislabelling as the `char` cases under CWE-190.
+**Six of the eighteen source families are `float_`, and those are not defects.** IEEE 754 makes division of a double by zero *defined*: it raises the divide-by-zero flag and yields an infinity. It may still be a logic error, but it is not the undefined behaviour CWE-369 names, and nothing will trap it. Juliet files them under 369 anyway — the same mislabelling as the `char` cases under CWE-190, where `data + 1` promotes to `int` and nothing overflows.
+
+The scorer now has an `EXCLUDED` table for exactly this, and **the count and the reason are printed on every run** so a reader can put them back. Over the 168 excluded float cases the number is 40.4%; over the integer cases where the defect is real it is **56.0% at +54.9 discrimination**.
+
+**The bar for that table is that the defect is absent, checkable from the standard — never that Kordon happens to miss it.** The CWE-190 `char` cases are left in for the same reason in reverse: the boundary there is less clear-cut, so removing them would be closer to score-gaming than to accuracy.
 
 Any comparison against zero is accepted as the guard, including `d == 0` used to skip. Deliberately generous: accepting a weak guard costs a missed defect, rejecting a real one costs a false positive on code that did check.
 

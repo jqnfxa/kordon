@@ -110,6 +110,28 @@ EQUIVALENT = {
     843: {843, 704},
 }
 
+# Cases the suite files under a CWE that are not instances of it.
+#
+# This is not a place to hide misses. The bar is that the *defect is absent*,
+# checkable from the language standard, not that Kordon happens to miss it --
+# and the count is always reported, so a reader can put it back.
+#
+# CWE-369's `float_` families divide a double by zero. IEEE 754 makes that
+# defined: it raises the divide-by-zero flag and yields an infinity. It may
+# still be a logic error, but it is not the undefined behaviour CWE-369
+# describes, and no sanitizer or analyzer will trap it. Six of the CWE's
+# eighteen source families are these.
+#
+# The same mislabelling appears under CWE-190, where `char data = CHAR_MAX;
+# data + 1` promotes to int and nothing overflows -- IKOS correctly calls those
+# SAFE. They are left in, because the boundary there is less clear-cut.
+EXCLUDED = {
+    369: (re.compile(r"__float_"),
+          "dividing a double by zero is defined (yields an infinity), not the "
+          "undefined behaviour CWE-369 describes"),
+}
+
+
 # Any function definition at file scope. The name decides whether it is ground
 # truth, and which side, so this only has to find the name before the paren.
 #
@@ -269,6 +291,13 @@ def main():
                 stride = len(chosen) / args.limit
                 chosen = [chosen[int(i * stride)] for i in range(args.limit)]
             files = [f for k in chosen for f in sorted(groups[k])]
+        excluded = 0
+        if cwe in EXCLUDED:
+            pattern, _why = EXCLUDED[cwe]
+            before = len(files)
+            files = [f for f in files if not pattern.search(os.path.basename(f))]
+            excluded = before - len(files)
+
         files.sort()
         # Sample evenly, never a prefix. Juliet names cases
         # `<type>_<source>_<operation>`, so a sorted prefix is entirely one
@@ -393,6 +422,8 @@ def main():
               f"{r['good_flagged']}/{r['good_total']} good]")
         if r["failed_units"]:
             print(f"          ! {r['failed_units']}")
+        if excluded:
+            print(f"          - {excluded} case(s) excluded: {EXCLUDED[cwe][1]}")
 
     if args.by_check:
         nb, ng = len(all_bad_g), len(all_good_g)
