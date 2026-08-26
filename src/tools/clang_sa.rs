@@ -20,7 +20,7 @@ use anyhow::Result;
 use crate::compile_db::CompileDb;
 use crate::ctu::{driver_for, parse_ctu_progress, CallGraph, CtuIndex};
 use crate::cwe::CweTable;
-use crate::finding::{Confidence, Event, Finding, Severity, Tool};
+use crate::finding::{Confidence, Event, Finding, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
 
 pub fn tool(ctu: bool) -> Tool {
@@ -329,7 +329,7 @@ pub fn parse_plist(path: &Path, table: &CweTable, ctu: bool) -> Result<Vec<Findi
             file,
             line,
             column,
-            severity: Severity::Warning,
+            severity: class.severity,
             confidence: class.confidence,
             message,
             events,

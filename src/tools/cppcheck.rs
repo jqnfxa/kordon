@@ -255,6 +255,9 @@ impl PartialError {
         // A finding with no location cannot be deduped or acted on.
         let primary = self.locations.first()?;
 
+        // cppcheck's own severity still decides the *default confidence* --
+        // it is a statement about how sure the engine is. How bad the defect
+        // is comes from the mapping table.
         let severity = severity_of(&self.severity);
         let class = table.classify(
             &tool(),
@@ -282,7 +285,7 @@ impl PartialError {
             file: canonical(&primary.file),
             line: primary.line,
             column: primary.column,
-            severity,
+            severity: class.severity,
             confidence: class.confidence,
             message: self.message,
             events,
@@ -361,11 +364,25 @@ mod tests {
         assert_eq!(f.cwe_source, CweSource::Overridden);
     }
 
+    /// Severity describes the defect, not the engine's own label for its
+    /// diagnostic.
+    ///
+    /// `operatorEqToSelf` arrives from cppcheck as `severity="style"` with
+    /// `cwe="398"`, and it is a use after free. The mapping table already
+    /// corrects the CWE to 416; taking the severity from the tool as well left
+    /// a memory-corruption defect filed as style. Both now follow the class.
     #[test]
-    fn severity_maps_to_kordon_vocabulary() {
+    fn severity_follows_the_defect_not_the_engines_label() {
         let all = parsed();
         assert_eq!(all[0].severity, Severity::Error);
-        assert_eq!(all[2].severity, Severity::Style);
+
+        assert_eq!(all[2].native_id, "operatorEqToSelf");
+        assert_eq!(all[2].cwe, Some(416));
+        assert_eq!(
+            all[2].severity,
+            Severity::Error,
+            "cppcheck calls this style; it is a use after free"
+        );
     }
 
     #[test]

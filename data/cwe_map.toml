@@ -1114,6 +1114,18 @@ confidence = "medium"
 
 # An integer divisor from a call with no zero test. core.DivideZero covers the
 # provable case; this covers the one where the value came from outside.
+# Same certainty, different consequence. IEEE 754 defines division of a double
+# by zero -- it yields an infinity -- so this is not undefined behaviour and
+# must not be reported as an error. It is still usually a mistake, and an
+# infinity propagating silently into later results is harder to diagnose than a
+# trap, so it is advice rather than silence.
+[[rule]]
+tool = "kordon-query"
+check = "kordon-unchecked-float-divisor"
+cwe = 369
+confidence = "medium"
+severity = "style"
+
 [[rule]]
 tool = "kordon-query"
 check = "kordon-unchecked-divisor"

@@ -51,9 +51,11 @@ void local_divisor_good(int n)
     printf("%d\n", 100 / d);
 }
 
-/* Not a finding: dividing a double by zero yields an infinity, not undefined
- * behaviour. Without this restriction the check reported 62 positions across
- * two real projects, nearly all of them `r = sqrt(x); p/r` in vendored code. */
+/* Advice, not an error. IEEE 754 defines this: the division yields an
+ * infinity rather than trapping. Still usually a mistake -- the infinity
+ * propagates silently into every later result and surfaces as a nonsensical
+ * number rather than a crash, which is harder to diagnose. Same confidence as
+ * the integer case, lower severity, which is what the two axes are for. */
 void floating_divisor_good(void)
 {
     double d = (double)rand();

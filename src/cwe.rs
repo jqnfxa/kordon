@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::finding::{Confidence, CweSource, Tool};
+use crate::finding::{Confidence, CweSource, Severity, Tool};
 
 /// The table shipped inside the binary. `--cwe-map` overrides it.
 const BUILTIN_TABLE: &str = include_str!("../data/cwe_map.toml");
@@ -36,6 +36,15 @@ pub struct CweEntry {
     /// 1 = in Kordon's scope. 2/3 = explicitly out of scope (injection,
     /// authorization). 0 = style indicator, not a defect class we claim.
     pub tier: u8,
+    /// How bad this class is *if the finding is real* -- a different question
+    /// from how sure we are that it is, which is `confidence`.
+    ///
+    /// Defaults by tier when absent: tier 1 is an error, everything else is
+    /// advice. Set it explicitly where the class is real but defined -- float
+    /// division by zero yields an infinity rather than trapping, and a dead
+    /// store costs nothing at run time.
+    #[serde(default)]
+    pub severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,6 +58,11 @@ struct Rule {
     cwe: u32,
     #[serde(default)]
     confidence: Option<Confidence>,
+    /// Overrides the CWE's own severity for this check alone. Needed where one
+    /// CWE covers both an undefined case and a defined one -- CWE-369 is
+    /// exactly that.
+    #[serde(default)]
+    severity: Option<Severity>,
 }
 
 /// Resolved classification for one raw diagnostic.
@@ -57,6 +71,10 @@ pub struct Classification {
     pub cwe: Option<u32>,
     pub source: CweSource,
     pub confidence: Confidence,
+    /// How bad if real. Resolved from the rule, then the CWE, then the tier --
+    /// never from the tool's own diagnostic level, which describes the
+    /// diagnostic rather than the defect.
+    pub severity: Severity,
 }
 
 pub struct CweTable {
@@ -162,6 +180,7 @@ impl CweTable {
                     cwe: Some(rule.cwe),
                     source,
                     confidence: rule.confidence.unwrap_or(default_confidence),
+                    severity: rule.severity.unwrap_or_else(|| self.severity_of(rule.cwe)),
                 };
             }
         }
@@ -171,12 +190,32 @@ impl CweTable {
                 cwe: Some(cwe),
                 source: CweSource::Native,
                 confidence: default_confidence,
+                severity: self.severity_of(cwe),
             },
             None => Classification {
                 cwe: None,
                 source: CweSource::Unmapped,
                 confidence: default_confidence,
+                severity: Severity::Warning,
             },
+        }
+    }
+
+    /// How bad this CWE is if the finding is real.
+    ///
+    /// Declared severity wins; otherwise it follows the tier. Tier 1 is the
+    /// memory- and value-safety scope Kordon claims, so those are errors by
+    /// default. Everything else -- the tier-0 code-quality indicators, and any
+    /// CWE nobody has classified -- is advice, because reporting it as an
+    /// error would overstate a claim nobody made.
+    pub fn severity_of(&self, cwe: u32) -> Severity {
+        match self.catalog.get(&cwe) {
+            Some(entry) => entry.severity.unwrap_or(if entry.tier == 1 {
+                Severity::Error
+            } else {
+                Severity::Style
+            }),
+            None => Severity::Warning,
         }
     }
 }

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::ctu::CallGraph;
 use crate::cwe::CweTable;
 use crate::dedup::MergedFinding;
-use crate::finding::{Confidence, CweSource, Finding, Proof};
+use crate::finding::{Confidence, CweSource, Finding, Proof, Severity};
 use crate::tools::{ToolOutcome, ToolRun};
 
 pub struct Report<'a> {
@@ -318,13 +318,30 @@ impl<'a> Report<'a> {
             .into_iter()
             .partition(|m| m.confidence > Confidence::Low || show_all);
 
-        // Group by CWE so a reviewer sees defect classes, not a flat list.
-        let mut by_cwe: BTreeMap<u32, Vec<&MergedFinding>> = BTreeMap::new();
+        // Severity first, then CWE. Confidence says how sure Kordon is that a
+        // finding is real; severity says how bad it is if it is. They are
+        // different questions and a reader needs both -- an integer division
+        // by zero is undefined behaviour, a float one yields an infinity, and
+        // the same check reports both with the same certainty.
+        let mut by_severity: BTreeMap<Severity, Vec<&MergedFinding>> = BTreeMap::new();
         for m in &substantive {
-            by_cwe.entry(m.primary.cwe.unwrap()).or_default().push(*m);
+            by_severity.entry(m.severity()).or_default().push(*m);
         }
 
-        for (cwe, group) in &by_cwe {
+        for (severity, band) in by_severity.iter().rev() {
+            let (heading, blurb) = match severity {
+                Severity::Error => ("Errors", "undefined behaviour, or memory the program has no right to touch"),
+                Severity::Warning => ("Warnings", "defined behaviour that is very likely not what was meant"),
+                _ => ("Advice", "defined, harmless at run time, and usually a sign of something else"),
+            };
+            out.push_str(&format!("\n  ── {heading} ── {blurb}\n\n"));
+
+            let mut by_cwe: BTreeMap<u32, Vec<&MergedFinding>> = BTreeMap::new();
+            for m in band {
+                by_cwe.entry(m.primary.cwe.unwrap()).or_default().push(*m);
+            }
+
+            for (cwe, group) in &by_cwe {
             let name = self.table.name_of(*cwe).unwrap_or("(unnamed)");
             out.push_str(&format!("  CWE-{cwe}  {name}  [{}]\n", group.len()));
 
@@ -370,15 +387,18 @@ impl<'a> Report<'a> {
                 }
                 out.push('\n');
             }
+            }
         }
 
-        let total: usize = by_cwe.values().map(|g| g.len()).sum();
+        let total = substantive.len();
         if total == 0 {
             out.push_str("  none above low confidence\n");
         }
+        let classes: std::collections::BTreeSet<u32> =
+            substantive.iter().filter_map(|m| m.primary.cwe).collect();
         out.push_str(&format!(
             "  {total} defect(s) across {} CWE class(es)\n",
-            by_cwe.len()
+            classes.len()
         ));
 
         if !risk_patterns.is_empty() {

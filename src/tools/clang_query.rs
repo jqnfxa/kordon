@@ -25,7 +25,7 @@ use std::process::Command;
 
 use crate::compile_db::CompileDb;
 use crate::cwe::CweTable;
-use crate::finding::{Confidence, Finding, Severity, Tool};
+use crate::finding::{Confidence, Finding, Tool};
 use crate::tools::{ToolOutcome, ToolRun};
 
 pub fn tool() -> Tool {
@@ -88,6 +88,9 @@ pub enum Exemption {
     /// Assembled whole: the divisor's source and the missing zero test have to
     /// name the same variable.
     UncheckedDivisor,
+    /// The same shape with a floating divisor, which is defined behaviour and
+    /// so a different severity.
+    UncheckedFloatDivisor,
     /// Assembled whole, because the release must be recognised as releasing
     /// the same member that is being overwritten.
     ReinitWithoutFree,
@@ -131,6 +134,9 @@ impl QueryCheck {
         if self.exemption == Exemption::UncheckedDivisor {
             return unchecked_divisor_matcher();
         }
+        if self.exemption == Exemption::UncheckedFloatDivisor {
+            return unchecked_divisor_matcher().replace("isInteger()", "realFloatingPointType()");
+        }
         if self.exemption == Exemption::TransferToNonOwner {
             return transfer_to_non_owner_matcher();
         }
@@ -156,6 +162,7 @@ impl QueryCheck {
             | Exemption::OneSidedIndexGuard
             | Exemption::UncheckedNegativeIndex
             | Exemption::UncheckedDivisor
+            | Exemption::UncheckedFloatDivisor
             | Exemption::TransferToNonOwner => unreachable!("handled above"),
             Exemption::LoopCounter => {
                 m.push_str(", unless(");
@@ -1560,6 +1567,29 @@ unless(hasAncestor(functionDecl(hasDescendant({zero_test}))))\
     )
 }
 
+/// The same shape as [`UNCHECKED_DIVISOR`] with a floating-point divisor.
+///
+/// A separate check because it is a separate *claim*. IEEE 754 defines this:
+/// the division raises the divide-by-zero flag and yields an infinity, so
+/// nothing traps and nothing is corrupted. It is still very often a mistake --
+/// an infinity propagates silently through every later computation and comes
+/// out as a nonsensical result rather than a crash, which is harder to
+/// diagnose, not easier.
+///
+/// So: reported with the same confidence as the integer case, because the
+/// shape is equally certain, and at a lower **severity**, because the
+/// consequence is different. That is exactly the split the two axes exist for,
+/// and one check id cannot carry two severities.
+pub const UNCHECKED_FLOAT_DIVISOR: QueryCheck = QueryCheck {
+    id: "kordon-unchecked-float-divisor",
+    base: "",
+    exemption: Exemption::UncheckedFloatDivisor,
+    extra_args: &[],
+    only_if_defined: None,
+    message: "this divides by a floating-point value that came from a call and is never compared \
+to zero -- defined behaviour, but the infinity it produces propagates silently",
+};
+
 pub const CHECKS: &[QueryCheck] = &[
     UNSIGNED_SUBTRACTION,
     UNSIGNED_ADDITION,
@@ -1576,6 +1606,7 @@ pub const CHECKS: &[QueryCheck] = &[
     ONE_SIDED_INDEX_GUARD,
     UNCHECKED_NEGATIVE_INDEX,
     UNCHECKED_DIVISOR,
+    UNCHECKED_FLOAT_DIVISOR,
 ];
 
 /// Locate clang-query. Distributions ship it versioned far more often than not.
@@ -1666,7 +1697,7 @@ pub fn run(
                 file: m.file,
                 line: m.line,
                 column: m.column,
-                severity: Severity::Style,
+                severity: class.severity,
                 // From the table, per check. Clamping everything to Low here
                 // buried the one check that recognises a logic error rather
                 // than a risky shape -- it reported the same two genuine

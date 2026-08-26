@@ -518,7 +518,9 @@ pub fn parse(yaml: &str, table: &CweTable) -> Result<Vec<Finding>> {
         let file = PathBuf::from(&diag.message.file);
         let (line, column) = resolver.resolve(&file, diag.message.offset);
 
-        let severity = severity_of(&diag.level);
+        // Not `severity_of(&diag.level)`. The tool's level describes its own
+        // diagnostic; the mapping table describes the defect, which is the
+        // question a reader is asking.
         let class = table.classify(
             &tool(),
             &diag.name,
@@ -555,7 +557,7 @@ pub fn parse(yaml: &str, table: &CweTable) -> Result<Vec<Finding>> {
             file: canonical(&file),
             line,
             column,
-            severity,
+            severity: class.severity,
             confidence: class.confidence,
             message: diag.message.text,
             events,

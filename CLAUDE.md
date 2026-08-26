@@ -472,6 +472,35 @@ Measured, that list reports **one** position on pkt-astronomia where `cert-err33
 
 This is the first time the two tiers have been used to split one defect class by *which function* is involved rather than by which check found it, and it is the shape to reuse: the broad check counts, the curated one reports.
 
+## Severity and confidence are different questions (2026-08-26)
+
+The report grouped findings by confidence alone, and severity came from the *tool's* diagnostic level — cppcheck's `severity="style"`, clang-tidy's `Warning`. That is the engine describing its own diagnostic, not the defect.
+
+Two axes, and a reader needs both:
+
+- **confidence** — how sure Kordon is that this is real. From the check.
+- **severity** — how bad it is if it is real. From the **defect class**.
+
+The motivating case is CWE-369. `data = rand(); 100 / data` and `100.0 / data` are the same shape with the same certainty, and different consequences: the integer form is undefined behaviour, and the float form is *defined* — IEEE 754 yields an infinity. Reporting the second as an error overstates it; not reporting it at all is worse, because an infinity propagates silently into every later result and surfaces as a nonsensical number rather than a crash.
+
+So the report now bands the findings:
+
+```
+  ── Errors ──   undefined behaviour, or memory the program has no right to touch
+  ── Warnings ── defined behaviour that is very likely not what was meant
+  ── Advice ──   defined, harmless at run time, and usually a sign of something else
+```
+
+`kordon-unchecked-divisor` (integer) is an error; `kordon-unchecked-float-divisor` is advice at the same confidence. **Two check ids rather than one, because a check id carries one severity** and the claim genuinely differs.
+
+Severity resolves from the rule, then the CWE, then the tier: tier 1 is an error by default, everything else advice. `[[cwe]]` and `[[rule]]` both take an optional `severity`.
+
+**This immediately corrected a misfiling nobody had noticed.** cppcheck reports `operatorEqToSelf` as `severity="style"` with `cwe="398"`. The table already corrected the CWE to 416 — a use after free — but the severity still came from cppcheck, so a memory-corruption defect was filed as style. A test now pins that both follow the class.
+
+On pkt-astronomia the split is 214 errors and 16 advice, the advice being float divisions that were previously either invisible or, before the integer restriction, indistinguishable from real defects.
+
+**Recall still excludes the float cases**, because they are not instances of the defect CWE-369 names and crediting them would be crediting Kordon for flagging non-defects. They are reported, in the band that says what they are.
+
 ## Working plan: close the Juliet gaps, CWE by CWE
 
 The standing plan. Work one CWE at a time, in the order below, and record the
