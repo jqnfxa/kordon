@@ -588,6 +588,47 @@ Resist raising recall by loosening a guard. Every exemption removed is a real
 project's false positive, and this session already has three worked examples of
 an exemption that looked correct and silently matched nothing.
 
+## ESBMC measured properly (2026-08-26) — see `docs/esbmc-evaluation.md`
+
+**14/15 of decided cases found at 0 false positives, 9 of 24 undecided**, on
+CWE-121 and CWE-122 at 12 cases each. Kordon's static layer is 45.5% and 31.2%
+on the same classes. Bounded model checking is a genuinely different class of
+answer on the cases it can decide, and it returns a counterexample.
+
+**Every false positive was the harness. Four causes, three of them new traps:**
+
+- **`VIOLATION_RE` contained a bare `assertion` alternative**, and ESBMC spells
+  giving up as "unwinding **assertion**". Every bound-too-small was scored as a
+  defect, inflating recall and false positives together and making the gave-up
+  branch unreachable. **Scorer bug #6, same shape as the other five: a pattern
+  that looked exhaustive and silently matched more than it claimed.**
+- **A declared-but-bodiless function is havoc, not abstraction.** ESBMC models
+  the narrow string functions and none of `wchar.h`. Declaring the wide ones
+  parses; the run then prints `WARNING: no body for function wcslen` and
+  reports confidently on a state nothing in the program produced.
+  `scripts/esbmc-shim/wchar_model.c` gives them loop bodies — after which the
+  same case reports the overflow *inside* `wcsncat`, where it is.
+- **`alloca` is not declared by ESBMC's `<stdlib.h>` model** and Juliet never
+  includes `<alloca.h>`, so every `ALLOCA(n)` was an implicit declaration
+  returning `int` — a truncated pointer, then `invalid pointer freed` at the
+  closing brace of a *corrected* function. **A prototype alone does not fix
+  it**: glibc's header also routes the call to `__builtin_alloca`, and the
+  builtin is what ESBMC models.
+- **A missing translation unit.** `GLOBAL_CONST_FIVE` is `extern`, defined in
+  `io.c`. Not passing it left the value unknown, so exploring the branch Juliet
+  marks dead was *correct*. Same class as Kordon's own CTU gap.
+
+**`--no-library` is the wrong workaround** and was the earlier one. It makes
+the header clash go away by disabling the string models, so no bound derived
+from `strlen` can be proved either — the false-positive rate then measures the
+configuration rather than the engine.
+
+**Cost, and it is real:** the wide-string models are symbolically executed, so
+`--unwind` must exceed the longest string (Juliet's are 100), which is why the
+default here is 128 against ESBMC's 16. Of the 9 undecided, 6 fail to build on
+`sys/socket.h: redefinition of 'iovec'` — ESBMC's frontend mixing its header
+tree with the system's, mostly on the C++ variants — and 3 time out.
+
 ## Open questions for next session
 - **Missed detection to close: a loop variable used as an index after the loop ran to completion.** Reported from `~/VsCode/Satellite/rtklib_mod` (`ddidx` in `sat/pkt_sputnik_prcpos.c`): `ssat[i-k]` is read with `i-k == MAXSAT`, one past the end. The loop finishes without taking its `break`, so the index holds the bound, and the read happens after the loop. **Not flagged by any of the five engines, with CTU on; UBSan caught it in seconds.**
   - This is worth building because it is *purely syntactic* — no runtime values, no path sensitivity, no cross-TU reasoning. And it is **not** the ordering problem that blocked three earlier checks: this needs "is this reference outside the loop that bound the variable", which `hasAncestor`/`unless(hasAncestor(forStmt(equalsBoundNode(...))))` can express, not statement precedence, which matchers cannot.

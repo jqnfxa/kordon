@@ -34,13 +34,19 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 ESBMC = "third_party/esbmc/bin/esbmc"
+SHIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "esbmc-shim")
+PRELUDE = os.path.join(SHIM, "prelude.h")
+WCHAR_MODEL = os.path.join(SHIM, "wchar_model.c")
 
 # A real property violation. ESBMC names the class in the text and, usefully,
 # prints the CWE ids itself -- the only engine here that does.
+# Deliberately no bare `assertion` alternative. It was there for user asserts
+# and it matched "unwinding **assertion**", so every "I could not unroll this
+# far enough" was scored as a defect -- inflating recall and false positives
+# together and leaving the gave-up branch below unreachable.
 VIOLATION_RE = re.compile(
     r"dereference failure|array bounds violated|arithmetic overflow|"
-    r"division by zero|invalid pointer|memory leak|"
-    r"same object violation|NaN|assertion")
+    r"division by zero|invalid pointer|memory leak|same object violation|NaN")
 
 # "I gave up", not "I found something". Reported through the same channel.
 GAVE_UP_RE = re.compile(r"unwinding assertion")
@@ -76,14 +82,39 @@ def run_one(src, support, side, unwind, timeout):
     # answer, and blaming the engine for it was an error in an earlier
     # evaluation here.
     #
-    # --no-library is not optional: ESBMC's bundled headers clash with the
-    # suite's own includes and the run does not parse without it. The cost is
-    # that string functions are unmodelled, so `wcslen(source)` comes back
-    # unconstrained and bounds derived from it cannot be proved. Those
-    # remaining reports are the configuration's, not the engine's.
-    cmd = [ESBMC, src, os.path.join(support, "io.c"),
-           "--z3", "--unwind", str(unwind),
-           "-I", support, "-DINCLUDEMAIN", define, "--no-library"]
+    # `--no-library` is NOT used, and getting there took a shim. ESBMC ships a
+    # model for stdio.h but none for wchar.h, so a file including both mixes
+    # ESBMC's headers with the system's and FILE is defined twice --
+    # `struct _IO_FILE` against `__esbmc_file_t` -- and nothing parses.
+    # `scripts/esbmc-shim/wchar.h` declares what the suite uses and pulls in no
+    # FILE, which lets the library models stay on.
+    #
+    # Turning them off instead was the earlier workaround and it silently cost
+    # accuracy: with `--no-library` every string function is unmodelled, so
+    # bounds derived from `strlen` cannot be proved either and the false
+    # positive rate is the configuration's rather than the engine's.
+    # Two more shim pieces, each of which was a false positive before it
+    # existed and neither of which is a defect in the code under test:
+    #
+    #   prelude.h    declares `alloca` and routes it to `__builtin_alloca`.
+    #                ESBMC's <stdlib.h> model does not declare it and Juliet
+    #                never includes <alloca.h>, so every ALLOCA was an implicit
+    #                declaration returning `int` -- a truncated pointer, then
+    #                "invalid pointer freed" at the closing brace of a
+    #                *corrected* function.
+    #   wchar_model.c  gives the wide-string functions bodies. Declaring them
+    #                only makes the file parse; a bodiless call is a havoc
+    #                ("no body for function wcslen"), and ESBMC then reports on
+    #                the fabricated state. With bodies it reports the CWE-121
+    #                overflow *inside* wcsncat, which is where it is.
+    #
+    # The loops in wchar_model.c are symbolically executed, so `unwind` has to
+    # exceed the longest string in the case -- Juliet's buffers are 100 wide
+    # characters -- or they become unwinding assertions. Undecided, not wrong,
+    # but it is why the default bound here is far above ESBMC's own.
+    cmd = [ESBMC, src, os.path.join(support, "io.c"), WCHAR_MODEL,
+           "--z3", "--unwind", str(unwind), "--include-file", PRELUDE,
+           "-I", SHIM, "-I", support, "-DINCLUDEMAIN", define]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -93,12 +124,13 @@ def run_one(src, support, side, unwind, timeout):
     if "VERIFICATION SUCCESSFUL" in blob:
         return "clean"
     if "VERIFICATION FAILED" in blob:
-        # Order matters: a run can hit its unwinding limit *and* find a real
-        # violation, and the real one is what counts.
-        if VIOLATION_RE.search(blob):
+        # A run can hit its unwinding limit *and* find a real violation, so the
+        # unwinding-assertion lines are removed before looking for one rather
+        # than the two being tested in some order.
+        real = "\n".join(l for l in blob.split("\n")
+                          if not GAVE_UP_RE.search(l))
+        if VIOLATION_RE.search(real):
             return "violation"
-        if GAVE_UP_RE.search(blob):
-            return "gave_up"
         return "gave_up"
     return "error"
 
@@ -108,8 +140,8 @@ def main():
     ap.add_argument("root")
     ap.add_argument("--cwe", action="append", type=int)
     ap.add_argument("--limit", type=int, default=15)
-    ap.add_argument("--unwind", type=int, default=16)
-    ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--unwind", type=int, default=128)
+    ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--json-out")
     args = ap.parse_args()
