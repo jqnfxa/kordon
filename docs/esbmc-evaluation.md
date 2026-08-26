@@ -75,20 +75,64 @@ recall, `-DOMITBAD` for false positives.
 Roughly **65% recall at 20% false positives on clean cases**, against Kordon's
 current 45.5% at 0% for CWE-121. More recall, materially more noise.
 
-**The flow-variant false positives are a Juliet artifact, not an ESBMC
-weakness.** Traced one: `goodG2B1` writes
+### The false positives were mine, not ESBMC's — corrected
+
+An earlier version of this document blamed ESBMC for "not folding the global
+constant" in Juliet's flow-variant scaffolding. **That diagnosis was wrong**,
+and the check the reader deserves is the one that found it: prove the code is
+correct, then explain what the engine was actually told.
+
+The flagged function:
 
 ```c
 data = NULL;
-if (GLOBAL_CONST_FIVE != 5) { /* dead */ }
-else { data = malloc(...); if (data == NULL) exit(-1); }
+if (GLOBAL_CONST_FIVE != 5) { /* Juliet marks this dead */ }
+else { data = malloc((10+1)*sizeof(wchar_t)); if (data == NULL) exit(-1); }
+...
+sourceLen = wcslen(source);                       /* source is L"AAAAAAAAAA" */
+for (i = 0; i < sourceLen + 1; i++) data[i] = source[i];
 ```
 
-ESBMC does not fold the global constant, explores the dead branch, and reports
-a NULL dereference that cannot happen. That scaffolding exists specifically to
-defeat analyzers and appears in no real code — which is exactly why the
-`_01`-only numbers are the ones to quote, and why this engine in particular
-must be judged on real code.
+**The code is correct, three ways:**
+
+1. **Arithmetic.** `SRC_STRING` is `L"AAAAAAAAAA"` — 10 wide characters plus a
+   NUL, so `wchar_t source[10+1]` holds exactly 11 elements with valid indices
+   0..10. `wcslen` returns 10, the loop runs `i = 0..10`, and `data` is
+   `malloc((10+1)*sizeof(wchar_t))` — 11 elements, indices 0..10. Every access
+   is in bounds, with nothing to spare and nothing over.
+2. **Empirically.** 200 runs of the corrected half under ASan+UBSan with
+   `-fno-sanitize-recover=all`: **zero failures**.
+3. **ESBMC agrees.** Given the same logic with the two unknowns resolved — the
+   constant defined locally and `wcslen` replaced by the value it provably
+   returns — it reports `VERIFICATION SUCCESSFUL`.
+
+**So what was ESBMC missing? Exactly what the invocation withheld.**
+
+- `GLOBAL_CONST_FIVE` is declared **`extern`** in `std_testcase.h` and defined
+  in `io.c`. The scorer passed only the test file, so its value was genuinely
+  unknown and ESBMC was *right* to explore both branches. There was no constant
+  to fold. **That is a missing translation unit — the same class as Kordon's
+  own CTU gap — not a weakness in the engine.** The scorer now passes `io.c`
+  and those reports disappear.
+- The remaining reports come from `--no-library`, which is **not optional**
+  here: ESBMC's bundled headers clash with the suite's own includes and the run
+  does not parse without it. It also disables the string-function models, so
+  `wcslen(source)` returns an unconstrained value and no bound derived from it
+  can be proved. Again correct given what it was told.
+
+**Neither report was ESBMC reasoning badly.** Both were the harness. The
+lesson is the one this project keeps relearning in a new costume: when a tool
+reports something surprising, the instrument is the first suspect, and
+"prove the code is correct" is the question that settles it.
+
+### What the numbers are worth
+
+With `io.c` included the sample reads 7/15 found, 5/15 false positives, and
+5 of 20 cases undecided — the extra unit enlarges the formula and more runs
+hit the deadline. **These numbers move substantially with configuration**, so
+treat them as a rough indication that the engine is in the right range and not
+as a measurement of the kind `data/juliet-baseline.json` holds. A trustworthy
+figure needs the header clash resolved first, so the library models can stay on.
 
 CWE-190 found nothing: overflow checking is not on by default and needs
 `--overflow-check`.

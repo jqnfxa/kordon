@@ -69,7 +69,20 @@ def sample(base, limit):
 def run_one(src, support, side, unwind, timeout):
     """'violation', 'clean', 'gave_up', 'timeout' or 'error' for one side."""
     define = "-DOMITGOOD" if side == "bad" else "-DOMITBAD"
-    cmd = [ESBMC, src, "--z3", "--unwind", str(unwind),
+    # io.c defines GLOBAL_CONST_FIVE and friends. They are declared `extern` in
+    # std_testcase.h, so without this translation unit their values are unknown
+    # and ESBMC correctly explores the branch Juliet marks dead -- reporting a
+    # NULL dereference that cannot happen. That is a missing unit, not a wrong
+    # answer, and blaming the engine for it was an error in an earlier
+    # evaluation here.
+    #
+    # --no-library is not optional: ESBMC's bundled headers clash with the
+    # suite's own includes and the run does not parse without it. The cost is
+    # that string functions are unmodelled, so `wcslen(source)` comes back
+    # unconstrained and bounds derived from it cannot be proved. Those
+    # remaining reports are the configuration's, not the engine's.
+    cmd = [ESBMC, src, os.path.join(support, "io.c"),
+           "--z3", "--unwind", str(unwind),
            "-I", support, "-DINCLUDEMAIN", define, "--no-library"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
