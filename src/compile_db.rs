@@ -78,6 +78,9 @@ pub struct CompileDb {
     /// Reported, never silent: the analysis ran on slightly different flags
     /// than the build used, and the reader is entitled to know which.
     dropped: Vec<String>,
+    /// Set only when `path` is a rewritten copy Kordon wrote itself, so the
+    /// caller knows which directory is safe to remove.
+    owned: Option<PathBuf>,
 }
 
 impl CompileDb {
@@ -120,13 +123,28 @@ impl CompileDb {
         } else {
             write_normalized(&entries)?
         };
+        // Remembered so the caller can remove it. Only the rewritten copy is
+        // ours; the path the user passed must never be deleted.
+        let owned = if dropped.is_empty() {
+            None
+        } else {
+            Some(path.clone())
+        };
 
-        Ok(CompileDb { path, args, dropped })
+        Ok(CompileDb { path, args, dropped, owned })
     }
 
     /// GCC-only flags removed so clang could read this database.
     pub fn dropped_flags(&self) -> &[String] {
         &self.dropped
+    }
+
+    /// The rewritten database Kordon created, if it created one.
+    ///
+    /// A GCC project gets a normalized copy under the temp directory. The path
+    /// the user passed is never returned here.
+    pub fn owned_dir(&self) -> Option<&Path> {
+        self.owned.as_deref()
     }
 
     /// Path to pass to tools that read the database themselves.
@@ -152,6 +170,24 @@ impl CompileDb {
             .iter()
             .cloned()
             .partition(|source| self.contains(source))
+    }
+}
+
+/// Remove the rewritten copy when the database goes out of scope.
+///
+/// On `Drop` rather than at the end of `main`: a GCC project leaves one
+/// directory per run under the temp dir, and cleaning up at the end only
+/// covers the path where everything succeeded. The first thing that goes
+/// wrong after loading the database -- "none of the discovered sources appear
+/// in the compile database" is an easy one to hit -- exits before reaching it.
+///
+/// Only ever the copy Kordon wrote. `owned` is None when the database was
+/// usable as given, so the user's own directory cannot be reached from here.
+impl Drop for CompileDb {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.owned {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -223,7 +259,13 @@ fn write_normalized(entries: &serde_json::Value) -> Result<PathBuf> {
         out.push(serde_json::Value::Object(new_entry));
     }
 
-    let dir = std::env::temp_dir().join(format!("kordon-db-{}", std::process::id()));
+    // Unique per database, not just per process. Two databases loaded in one
+    // process shared a directory, so dropping either deleted the other's file
+    // -- harmless in production, where there is one, and an intermittent test
+    // failure as soon as there are two.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("kordon-db-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("compile_commands.json");
     std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
@@ -234,14 +276,31 @@ fn write_normalized(entries: &serde_json::Value) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Removes the fixture directory when the test ends, however it ends.
+    ///
+    /// Without this each `cargo test` left one directory per test behind in
+    /// the temp dir forever -- 49 of them had accumulated here. Tiny
+    /// individually, and nothing ever collects them.
+    struct Fixture(PathBuf);
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// Unique per test: the suite runs in parallel inside one process, so a
     /// shared pid-derived path has tests truncating each other's fixture.
-    fn db_from(json: &str, tag: &str) -> CompileDb {
+    ///
+    /// The returned guard must be held for as long as the database is used --
+    /// `let (db, _fixture) = db_from(...)` -- since dropping it deletes the
+    /// file the database was loaded from.
+    fn db_from(json: &str, tag: &str) -> (CompileDb, Fixture) {
         let dir = std::env::temp_dir()
             .join(format!("kordon-db-test-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("compile_commands.json"), json).unwrap();
-        CompileDb::load(&dir).unwrap()
+        (CompileDb::load(&dir).unwrap(), Fixture(dir))
     }
 
     const SAMPLE: &str = r#"[
@@ -253,7 +312,7 @@ mod tests {
 
     #[test]
     fn strips_compile_and_output_flags() {
-        let db = db_from(SAMPLE, "strip");
+        let (db, _fixture) = db_from(SAMPLE, "strip");
         let args = db.args_for(Path::new("/src/a.cpp")).unwrap();
         assert!(args.contains(&"-DFOO".to_string()));
         assert!(args.contains(&"-I/inc".to_string()));
@@ -266,14 +325,14 @@ mod tests {
 
     #[test]
     fn supports_the_arguments_array_form() {
-        let db = db_from(SAMPLE, "argsform");
+        let (db, _fixture) = db_from(SAMPLE, "argsform");
         let args = db.args_for(Path::new("/src/b.cpp")).unwrap();
         assert_eq!(args, ["-I/other"]);
     }
 
     #[test]
     fn partitions_sources_by_build_membership() {
-        let db = db_from(SAMPLE, "partition");
+        let (db, _fixture) = db_from(SAMPLE, "partition");
         let (built, unlisted) = db.partition(&[
             PathBuf::from("/src/a.cpp"),
             PathBuf::from("/tests/t.cpp"),
@@ -285,7 +344,8 @@ mod tests {
 
     #[test]
     fn unknown_file_has_no_flags() {
-        assert!(db_from(SAMPLE, "unknown").args_for(Path::new("/nope.cpp")).is_none());
+        let (db, _fixture) = db_from(SAMPLE, "unknown");
+        assert!(db.args_for(Path::new("/nope.cpp")).is_none());
     }
 
     const GCC_KERNEL: &str = r#"[
@@ -295,7 +355,7 @@ mod tests {
 
     #[test]
     fn gcc_only_flags_are_removed_so_clang_can_read_the_database() {
-        let db = db_from(GCC_KERNEL, "gccflags");
+        let (db, _fixture) = db_from(GCC_KERNEL, "gccflags");
         let args = db.args_for(Path::new("/src/dmp.c")).unwrap();
         // clang errors rather than skipping these, so a single one left in
         // fails *every* translation unit and the run looks like a broken
@@ -316,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_clang_database_is_passed_through_untouched() {
-        let db = db_from(SAMPLE, "passthrough");
+        let (db, _fixture) = db_from(SAMPLE, "passthrough");
         // No rewrite, so tools read the project's own file and any path
         // assumption they make about it still holds.
         assert!(db.dropped_flags().is_empty());
@@ -328,5 +388,24 @@ mod tests {
     #[test]
     fn missing_database_is_an_error() {
         assert!(CompileDb::load(Path::new("/nonexistent/kordon-db")).is_err());
+    }
+
+    /// The rewritten copy is removed when the database is dropped, and the
+    /// user's own directory never is.
+    #[test]
+    fn the_rewritten_copy_is_cleaned_up_and_the_original_is_not() {
+        let (db, _fixture) = db_from(GCC_KERNEL, "ownedtmp");
+        let rewritten = db.owned_dir().expect("gcc flags force a rewrite").to_path_buf();
+        assert!(rewritten.exists());
+        drop(db);
+        assert!(!rewritten.exists(), "the copy Kordon wrote must not survive");
+
+        // A clang database needs no rewrite, so there is nothing to own -- and
+        // nothing that could delete the directory the user passed.
+        let (clean, fixture) = db_from(SAMPLE, "ownednone");
+        assert!(clean.owned_dir().is_none());
+        let given = fixture.0.clone();
+        drop(clean);
+        assert!(given.exists(), "the user's own directory is never removed");
     }
 }
