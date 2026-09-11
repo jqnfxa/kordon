@@ -18,6 +18,10 @@ Expectations live in comments in the fixture's own sources:
     // @kordon cwe: 129, 124          the class(es) this fixture is about
     // @kordon flags: --ctu            extra kordon flags (default: none)
     // @kordon confidence: low         floor: low | medium (default) | high
+    // @kordon xfail: <why>            a known flaw is pinned here: failures are
+                                       listed but do not fail the run, and a
+                                       fixture that passes is reported as XPASS
+                                       so the directive gets removed
 
     // @bad [787]                      on or just above a function: its body
                                        must draw >= 1 finding in the class
@@ -64,7 +68,7 @@ SOURCES = (".c", ".cpp", ".cc", ".cxx")
 HEADERS = (".h", ".hpp", ".hh")
 RANK = {"low": 0, "medium": 1, "high": 2}
 
-DIRECTIVE_RE = re.compile(r"@kordon\s+(cwe|flags|confidence)\s*:\s*(.*?)\s*(?:\*/)?\s*$")
+DIRECTIVE_RE = re.compile(r"@kordon\s+(cwe|flags|confidence|xfail)\s*:\s*(.*?)\s*(?:\*/)?\s*$")
 MARKER_RE = re.compile(r"@(bad|good|expect|silent)\b\s*([\d,\s]*)")
 
 
@@ -107,7 +111,7 @@ def body_range(lines, start):
 
 def load_fixture(fdir):
     """Directives, explicit markers and implicit (name-based) functions."""
-    fx = {"cwe": [], "flags": [], "confidence": "medium",
+    fx = {"cwe": [], "flags": [], "confidence": "medium", "xfail": None,
           "funcs": [], "lines": [], "files": []}
     for name in sorted(os.listdir(fdir)):
         path = os.path.join(fdir, name)
@@ -126,6 +130,8 @@ def load_fixture(fdir):
                     fx["flags"] = val.split()
                 elif key == "confidence":
                     fx["confidence"] = val.strip().lower()
+                elif key == "xfail":
+                    fx["xfail"] = val.strip() or "known flaw"
                 continue
             for m in MARKER_RE.finditer(line):
                 kind, ids = m.group(1), m.group(2)
@@ -340,11 +346,22 @@ def main():
                    + (f"  [{' '.join(flags)}]" if flags else ""))
         failed_units = [n for e in report.get("engines", []) for n in e.get("notes", [])
                         if "FAILED TO COMPILE" in n]
-        if failures:
+        if failures and fx["xfail"]:
+            # A pinned flaw. The failures are the point of the fixture; they
+            # are shown so the lane fixing it can watch them go, and they do
+            # not fail the run.
+            print(f"  xfail {name:<26} {summary}  ({len(failures)} known: {fx['xfail']})")
+            for f in failures:
+                print(f"          {f}")
+        elif failures:
             bad += 1
             print(f"  FAIL  {name:<26} {summary}")
             for f in failures:
                 print(f"          {f}")
+        elif fx["xfail"]:
+            bad += 1
+            print(f"  XPASS {name:<26} {summary} -- the pinned flaw no longer reproduces; "
+                  f"remove the `@kordon xfail:` directive")
         else:
             print(f"  ok    {name:<26} {summary}")
         for n in failed_units:

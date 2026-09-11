@@ -705,6 +705,15 @@ green; the other 23 are listed as unmarked and assigned in the briefs
   loop-counter flood.
 - **A 40-file scorer run takes ~8 s; the whole 26-CWE baseline ~4 min.**
   Regression is cheap; run it every time.
+- **The guard vocabulary is narrower than the idiom** (user-reported,
+  measured on `testdata/early_exit_guard/`): 14 of 22 genuine "check, then
+  leave" spellings still draw `kordon-unsigned-subtraction`, and `if
+  (v.empty()) return; … v.size() - 1` draws `kordon-extent-underflow` at
+  medium. `EXIT_STATEMENTS` misses a `throw` wrapped in `ExprWithCleanups`,
+  `exit`/`abort`/`goto`/`continue`/`break` and an else-branch `return`; no
+  guard shape exists for a member-field operand; an extent guard must be the
+  same accessor. The harness has an `xfail` directive now so a known flaw can
+  be pinned without turning main red.
 - **Two harness bugs of the usual shape**: `explain-misses.py` hard-coded a
   dead scratchpad path (it resolves `third_party/juliet/C` now, or `--root` /
   `$KORDON_JULIET`), and its `nargs="*"` pass-through lost everything after

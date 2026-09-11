@@ -148,4 +148,9 @@ Every item below now has an owner lane; the brief holds the detail.
 - **`size_t size = ftell(f); vector(size + 1)`** is reported as a low CWE-190 on
   the bad and the corrected twin alike; the defect is the error return
   accepted as a size, and nothing reports that line (`integer` TODO 5).
+- **A real early-exit guard still does not silence the underflow checks** in
+  14 of 22 spellings — `throw` of a class type, `exit`/`abort`/`goto`/
+  `continue`/`break`, a member-field operand, `empty()` guarding `size() - 1`
+  (the medium one). Pinned as `testdata/early_exit_guard/`, `xfail`
+  (`integer` TODO 6b).
 - **23 of the 28 harness-run fixtures are unmarked**; each brief names its own.

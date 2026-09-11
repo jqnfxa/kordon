@@ -163,6 +163,43 @@ with a positive literal — measure that it does not exempt the sibling. The
 twin problem: three overloads carry the identical `&&`-for-`||` guard and only
 the first is flagged; find out why the matcher stops.
 
+### 6b. Early-exit guards the underflow checks do not recognise — a user-reported false positive
+
+`if (<check>) { return; }` then an unsigned subtraction is still reported when
+the check is real. Measured 2026-09-11 on `testdata/early_exit_guard/` (26
+functions, pinned `xfail`): **14 of 22 genuine guards are flagged**, the four
+unguarded controls correctly so. The causes are all in `src/tools/clang_query.rs`:
+
+- `EXIT_STATEMENTS` is `return`/`throw` only, and `throw std::runtime_error(…)`
+  — any type with a destructor — sits under an `ExprWithCleanups` the
+  matcher does not look through, so it does not count while `throw Error{1}`
+  does. `exit()`, `abort()`, `goto`, `continue`, `break` and a `return` in the
+  **else** branch are not exits either.
+- `unless(hasAncestor(ifStmt(mentions)))` was meant to stop the defect's own
+  `if` from exempting it (`if (x > n - 1) return;`) but it disables the
+  early-exit exemption for a subtraction anywhere inside *any* later `if`
+  that names the variable (`if (n == 0) return; if (f && n < 100) use(n - 1);`).
+  Bind the subtraction and require it not to be a descendant of the
+  **condition** — expressible with `equalsBoundNode`.
+- `GUARD_SHAPES` has no member-field shape, so `m_count - 1` can never be
+  exempted however it is guarded (`CHECK_MEMBER` exists for asserts; add the
+  same as a guard shape, and the `p->field` form).
+- an extent guard must be the *same accessor*: `if (v.empty()) return;` does
+  not exempt `v.size() - 1`, `isEmpty()` does not exempt `width() - 1`. **This
+  is `kordon-extent-underflow`, medium — the one that reaches the report.**
+  Accept an emptiness predicate on the same object (`empty`, `isEmpty`,
+  `isNull`, `isNullPointer`, `size() == 0`, `!size()`) as establishing the extent.
+- an explicit cast on the operand (`static_cast<std::size_t>(n) - 1`) hides it
+  from every shape; look through `explicitCastExpr` as well as implicit ones.
+
+Fix them one clause at a time, re-running the fixture (it reports XPASS when
+all 22 are silent — then remove the `xfail` directive), then the whole
+baseline: `c03` and `c04` are the controls that must not be lost, and
+`unsigned_underflow/`'s own defects must stay flagged. Real-code check:
+`rtklib_mod` and the fixed ACL tree numbers in `CLAUDE.md` (44 → 17 positions
+for `extent-underflow`) are the before; the after should be lower with the
+same defects kept.
+
 ### 7. Record the 369 ceiling and mark `unchecked_divisor`
 
 Already marked and green. Write the parameter ceiling into `## For CLAUDE.md`
@@ -178,7 +215,8 @@ with the count of `_41`+ cases in the sample.
 
 ## Fixtures
 
-Marked: `unchecked_divisor`. To mark: `unsigned_underflow` (two files),
+Marked: `unchecked_divisor`, `early_exit_guard` (xfail — 14 known false
+positives, TODO 6b). To mark: `unsigned_underflow` (two files),
 `masked_underflow`, `saturating_overflow`. To build: `unbounded_alloc_size`,
 `negative_return_unsigned`, `overflow_direction_pair`.
 
