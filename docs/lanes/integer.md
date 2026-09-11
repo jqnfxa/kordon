@@ -28,6 +28,10 @@ are not CWE-190 (promotion) and are deliberately left in; 369's `float_`
 families are excluded with the reason printed; float division is Advice. This
 lane holds **three of the four worst false-positive rates in the baseline**.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+190: 8/62 · 191: 12/59 · 197: 15/56 · 680: 20/56 · 369: 3/37. 369 drops to 8% on split cases: the divisor is always a parameter of the sink unit — the ceiling, measured. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-190 / 191

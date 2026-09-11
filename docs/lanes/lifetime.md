@@ -25,6 +25,10 @@ described since the first session still does not exist.
 | 775 fd leak | 8/49 = 16.3% (16.3) | 1/108 | +15.4 | 25/25 (valgrind `--track-fds`) | 0% → 0% | E |
 | 672 after release | **0/33** | 0/121 | 0 | — | — | G |
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+401: 26/57 · 415: 20/63 · 416: 14/50 · 590: **0/57** · 762: 16/53 (2 of 70 units failed to compile) · 775: not sampled · 672: 0/44. 590 is zero across units even with CTU — the stack buffer is declared in the source unit and freed in the sink unit; check whether `autovarInvalidDeallocation` and `unix.Malloc` can see a stack region imported through CTU at all before building anything. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-416 — half the misses are one cause, and it was found today

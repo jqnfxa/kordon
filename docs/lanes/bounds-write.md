@@ -28,6 +28,10 @@ checks exist and report zero positions on 169 real translation units; the
 `pro-bounds-*` guideline checks are tier 0; `alpha.unix.cstring.NotNullTerminated`
 never fires and was removed.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+121: 7/59 · 122: 3/56 · 124: 19/56. Lower than the single-file rows even with CTU: the split cases put the copy in a sink unit that never sees the destination's extent. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts (from `scripts/explain-misses.py <cwe>`)
 
 ### CWE-121

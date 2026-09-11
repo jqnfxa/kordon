@@ -28,6 +28,10 @@ vendor's "fill functions not modelled" false positive does **not** reproduce
 in Kordon — the engines already model `fread`/`memset`/`memcpy`/`strcpy` as
 initialising.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+457: 12/50 · 665: **0/56**. 665's split shape is `strncat` into a buffer that another unit never initialised — not the constructor class `uninit_owner` covers; with CTU the sink unit still has no fact about the buffer's contents. Record it against TODO 1: the append-into-uninitialised matcher works per function and cannot help here either. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-457

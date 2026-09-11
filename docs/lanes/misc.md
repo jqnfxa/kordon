@@ -21,6 +21,10 @@ is unexplored, and this lane explores it for every other lane.
 | 563 | 34/44 = 77.3% (70.5) | 3/132 | +75.0 | |
 | 843 | **0/44** | 0/103 | 0 | `char`/`short` accessed as `int` through `void *` |
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+483/562: no split cases · 563: 12/44 · 843: **0/57, and 19 of 64 units reported FAILED TO COMPILE**. Instrument first: `clang++ -fsyntax-only` parses `_81a.cpp` and `_81_bad.cpp` cleanly with the same flags, so the 19 failures are either clang-tidy's cumulative error counter (see CLAUDE.md) or a CTU-index step, not the sources. Until that is understood the multi-file 843 number is not a measurement. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-843

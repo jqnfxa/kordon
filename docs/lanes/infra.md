@@ -30,6 +30,10 @@ check lists), `src/report.rs`, `src/dedup.rs`, `scripts/score-juliet*.py`,
 - `events` is empty on every finding; header findings are dropped when the
   target is a `.cpp`; dedup is exact-line.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+clang-tidy reported FAILED TO COMPILE units in multi-file mode for 762 (2 of 70) and 843 (19 of 64) while the same files parse with `clang++ -fsyntax-only`. Find out which step fails (the tidy pass, the CTU AST dump, the extdef import) and make the report name the unit and the stage. A count that reads as 'failed to compile' for a unit that compiles is the same class of trap as the cumulative error counter. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## TODO — in order
 
 ### 1. The analyzer's loop budget — the largest single lever found today

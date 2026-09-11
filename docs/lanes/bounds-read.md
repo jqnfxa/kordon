@@ -27,6 +27,10 @@ reports it precisely; IKOS's findings there are *warnings* and belong in the
 unproven tier. CWE-127's `data = dataBuffer - 8` is caught by cppcheck's
 `pointerOutOfBounds` and the alpha checker.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+126: **0/59** · 127: 7/56. 126 is zero with CTU on the split cases; the value-range verdict holds across units too. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-126

@@ -27,6 +27,10 @@ failed it and was removed. 252's 70% raw / 20% surfaced is therefore **by
 design**: Juliet's ignored `fprintf`/`putc`/`fputs` results are counted low
 and never detailed.
 
+### Multi-file cases with `--ctu` (survey 2026-09-11, 25 cases per CWE)
+
+476: 18/54 · 252: no split cases · 690: not sampled. 476 at 33% across units is the CTU win recorded in CLAUDE.md, re-measured at a larger sample. Per-shape tables and the missed functions are in `docs/lanes/survey-2026-09-11.md`.
+
 ## Shapes and verdicts
 
 ### CWE-690

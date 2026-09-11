@@ -61,8 +61,10 @@ baseline once, and folds each brief's `## For CLAUDE.md` into `CLAUDE.md`.
 - the scorer and the explainer: `scripts/score-juliet.py`,
   `scripts/explain-misses.py <cwe> --misses`
 - the whole-baseline diff: `scripts/baseline.sh` → `scripts/compare-baselines.py`
-- the shape survey these briefs were written from: re-run it with
-  `scripts/explain-misses.py <cwe>`; the numbers in the briefs are a snapshot
+- the shape survey these briefs were written from, single-file and multi-file
+  with `--ctu`, including the missed functions to reduce into fixtures:
+  `docs/lanes/survey-2026-09-11.md`. Re-run `scripts/explain-misses.py <cwe>`
+  for a current number; the briefs are a snapshot
 
 ## Rules that keep nine branches mergeable
 
