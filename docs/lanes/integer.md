@@ -125,12 +125,29 @@ reporting the increment or reporting it under a CWE the 190 accept set
 `testdata/saturating_overflow/` (unmarked; yours; measured 1 of 3 found, 2
 false positives — see `docs/acl-report-findings.md` § Fixtures):
 
-- **a negative error return stored unsigned**: `size_t n = ftell(f);` with no
-  `< 0` test before use — `ftell`, `ftello`, `lseek`, `read`, `recv`, `sscanf`
-  returns assigned to an unsigned type. Narrow, mechanical, should cost no
-  false positives. New check, CWE-195 (add it to the catalog, tier 1; it is
-  the signed-to-unsigned conversion class) or 190 — argue the choice in the
-  rule comment.
+- **a negative error return stored unsigned** — measured 2026-09-11 on the
+  user's own shape, now the last pair in the fixture:
+
+      size_t size = std::ftell(f);          // -1 on error -> SIZE_MAX
+      std::vector<int> values(size + 1);    // wraps to 0: a legal empty vector
+
+  Kordon reports `kordon-unsigned-addition` (CWE-190, low) on `size + 1` —
+  **on the bad twin and on the corrected twin alike** (the good one tests
+  `n < 0` on the `long` before converting), so it discriminates zero and it
+  names the wrong thing: the wrap is the *consequence*. Nothing reports the
+  conversion line; cppcheck is silent. Other analyzers call this "unsigned
+  overflow", which is why the user raised it — the defect is an **error
+  return silently accepted as a size**. Build `kordon-negative-return-stored-
+  unsigned`: a call to `ftell`/`ftello`/`lseek`/`read`/`recv`/`sscanf`/
+  `snprintf`-family assigned or initialised into an unsigned-typed variable
+  (directly or through a cast) with no `< 0` / `== -1` / `>= 0` test of the
+  result anywhere in the function. Root cause **CWE-195** (add it to the
+  catalog, tier 1) with the message naming the consequence; medium, error.
+  Then make the consequence defer to the cause: when `kordon-unsigned-
+  addition`'s left operand is such a variable, either suppress it in favour of
+  the 195 or merge them in dedup as one finding — a reader must see one
+  defect, not a low-confidence overflow beside it. Good twins: the `long n`
+  test above; `if (size == (size_t)-1)`; a `ssize_t` kept signed.
 - **saturate then unsaturate**: a callee that clamps to a type maximum, whose
   caller immediately adds to the result. Cross-function; probably a verdict E
   rather than a check — but the fixture must stop flagging the *lockstep*

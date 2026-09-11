@@ -55,6 +55,22 @@ bool load_whole_file(std::FILE *in, std::vector<unsigned char> &buf)
     return std::fread(buf.data(), file_size, 1, in) == 1;
 }
 
+// The user's own shape (2026-09-11). The error return becomes SIZE_MAX, the
+// `+ 1` wraps it to zero, and vector(0) is a perfectly legal empty vector: the
+// failure is not merely masked, it is laundered into a valid-looking value.
+// Today Kordon reports CWE-190 low on `size + 1` here AND on the corrected
+// twin below, which is exactly the misleading report other analyzers give.
+// The finding this pair asks for is on the conversion line.
+std::vector<int> load_vector_unchecked(std::FILE *f)
+{
+    std::fseek(f, 0, SEEK_END);
+    std::size_t size = std::ftell(f);       // -1 stored unsigned: the defect
+    std::vector<int> values(size + 1);      // consequence, not cause
+    std::fseek(f, 0, SEEK_SET);
+    std::fread(values.data(), 1, size, f);
+    return values;
+}
+
 // The same shape with the wider accessor and no sanity check at all.
 std::size_t stream_length(std::FILE *in)
 {
@@ -79,6 +95,21 @@ std::size_t padded_range(std::size_t near, std::size_t far, std::size_t expansio
 }
 
 // ------------------------------------------------------------ must stay silent
+
+// The remediation for load_vector_unchecked: test the signed result before it
+// is ever converted. The `size + 1` line is unchanged and must not be reported
+// -- reporting it here is the discrimination failure measured above.
+std::vector<int> load_vector_checked(std::FILE *f)
+{
+    std::fseek(f, 0, SEEK_END);
+    long n = std::ftell(f);
+    if (n < 0) { return {}; }
+    std::size_t size = static_cast<std::size_t>(n);
+    std::vector<int> values(size + 1);
+    std::fseek(f, 0, SEEK_SET);
+    std::fread(values.data(), 1, size, f);
+    return values;
+}
 
 // The `ftell` result tested before it is widened. One `< 0` closes it.
 bool load_whole_file_checked(std::FILE *in, std::vector<unsigned char> &buf)

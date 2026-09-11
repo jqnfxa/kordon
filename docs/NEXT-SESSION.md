@@ -145,4 +145,7 @@ Every item below now has an owner lane; the brief holds the detail.
 - **The union of the layers** (`infra` TODO 4).
 - **Windows-only Juliet cases** counted as static misses — 775 loses 13 of 40
   units (`infra` TODO 3).
+- **`size_t size = ftell(f); vector(size + 1)`** is reported as a low CWE-190 on
+  the bad and the corrected twin alike; the defect is the error return
+  accepted as a size, and nothing reports that line (`integer` TODO 5).
 - **23 of the 28 harness-run fixtures are unmarked**; each brief names its own.

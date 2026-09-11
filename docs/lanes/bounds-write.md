@@ -128,6 +128,16 @@ must survive. Full write-up in `docs/acl-report-findings.md` § Fixtures.
 and why (`-Warray-bounds` is another candidate; the `misc` lane's diagnostic
 sweep may hand you the answer).
 
+### 5b. Zero-length allocation — measured, one mapping wrinkle
+
+`new double[0]; ptr[0] = 1;` is covered: `testdata/zero_length_tu_gate/` (same
+unit) draws CWE-787 medium from `ArrayBoundV2`, and `testdata/zero_length_ctu/`
+(four units) draws it only with `--ctu` — both re-measured 2026-09-11. The
+wrinkle: `cplusplus.NewDelete` also reports "Use of memory allocated with size
+zero" on the same line and the bare rule files it as **CWE-416 high**. It is
+not a use after free; add a `message_contains = "allocated with size zero"`
+rule → 787 (or 131) before the bare rule, and mark `zero_length_tu_gate`.
+
 ### 6. Multi-file: 122's 27.8% false positives under `--ctu`
 
 `scripts/score-juliet.py third_party/juliet/C --multifile --kordon-arg=--ctu
