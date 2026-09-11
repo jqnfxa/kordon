@@ -85,3 +85,6 @@ venv/
 __pycache__/
 *.pyc
 /third_party/esbmc
+
+# Parallel per-CWE lanes: git worktrees created by scripts/lane.sh
+/.claude/worktree/

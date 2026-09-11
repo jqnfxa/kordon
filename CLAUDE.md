@@ -645,3 +645,68 @@ tree with the system's, mostly on the C++ variants — and 3 time out.
 - Concrete design of the per-class ownership-summary pass (data structure, how it's computed, how it plugs into Clang SA's checker API).
 - Concrete design of the aggregation schema and CWE-mapping table format.
 - Build-matrix tooling design (how Kordon manages N separate sanitizer builds without becoming its own build system).
+
+## Lanes, a fixture harness, and the analyzer's loop budget (2026-09-11)
+
+The remaining work is split into **eight lanes** — `bounds-write`,
+`bounds-read`, `integer`, `lifetime`, `init`, `null-chain`, `misc`, `infra` —
+each a git worktree under `.claude/worktree/<lane>` on branch `lane/<lane>`,
+created by `scripts/lane.sh`. `docs/lanes/README.md` is the map; each brief
+carries the measured state, a shape-by-shape verdict table from
+`scripts/explain-misses.py`, and an ordered TODO. The pipeline is the
+`kordon-lane` skill; lanes never write the baseline, `docs/progress.md` or
+this file — the integrator does, once per batch (`kordon-integrate`).
+
+**`scripts/check-fixtures.py` replaces `--require-cwe` as the regression
+test.** Fixtures declare `@kordon cwe:` and mark functions `@bad`/`@good` (or
+use Juliet's `bad`/`good` naming) and lines `@expect`/`@silent`; the harness
+generates a compile database per fixture (without one, clang-tidy and the
+bounds analyzer fail on a `.c` file and report nothing), asserts detection at
+or above a confidence floor **and silence on the corrected twin**, and fails
+on either. Verified to fail on a deliberately wrong fixture. Five fixtures are
+marked (`one_sided_index`, `unchecked_divisor`, `loop_index_escape`,
+`zero_length_ctu`, `uninit_owner` — the last two under `--ctu`), 31 checks
+green; the other 23 are listed as unmarked and assigned in the briefs
+(`testdata/dynamic/` is a CMake project for the sanitizer layer and is skipped).
+
+**Measured while writing the briefs — do not re-derive:**
+
+- **The Static Analyzer's loop budget hides a whole family.** With the default
+  `max-loop=4`, `clang --analyze` reports *nothing* on Juliet's `new int[100]`
+  + 100-iteration init loop + `delete[]` + read, nor on the `malloc`/`free`
+  flow variants — the path is abandoned after four iterations and the code
+  after the loop is never analysed. `-analyzer-config widen-loops=true` or
+  `unroll-loops=true` reports `Use of memory after it is freed` on both;
+  `max-loop=128` alone does not. On the CWE-590 `alloca` case **only
+  `unroll-loops` recovers the free** — widening invalidates the loop's regions
+  and `free` sees an unknown pointer. Kordon passes no analyzer options to
+  either pass today. That is CWE-416's 50% and CWE-590's `alloca` 0/13.
+- **CWE-590 mapping gaps**: `unix.Malloc`'s "Memory allocated by alloca()
+  should not be deallocated" matches neither existing discriminator and falls
+  to the bare rule — **CWE-401**; `cplusplus.NewDelete` has no "not memory
+  allocated by" rule, so a stack `delete` files as 416. Placement-new
+  `delete` is reported by no engine.
+- **CWE-775**: `alpha.unix.Stream` and `alpha.unix.SimpleStream` both report
+  the `fopen`-never-closed case at the closing brace; neither is enabled.
+- **CWE-690**: an unchecked `malloc`/`calloc`/`realloc` result dereferenced is
+  reported by nothing — cppcheck 2.13 even with `--inconclusive`
+  (`nullPointerOutOfMemory` does not exist there), Clang SA with
+  `core,unix,alpha.core,optin.portability`. Needs a Kordon check.
+- **CWE-843** (`char` read as `int` through `void *`): `ArrayBoundV2`,
+  `alpha.core.CastToStruct`, `bugprone-casting-through-void`, `-Wcast-align`
+  all silent. **CWE-672** (`list::clear()` mid-iteration):
+  `alpha.cplusplus.InvalidatedIterator` + `IteratorRange` silent at default
+  options; the loop budget and the modelling checkers are the two things to
+  rule out before calling it tier G.
+- **The `_41`+ flow variants pass the value as a parameter**, so every
+  "filled from a call" clause (`one-sided-index-guard`, `unchecked-negative-
+  index`, `unchecked-divisor`) cannot fire there by design. That is the
+  ceiling for those rows, not a gap; extending to parameters is the
+  loop-counter flood.
+- **A 40-file scorer run takes ~8 s; the whole 26-CWE baseline ~4 min.**
+  Regression is cheap; run it every time.
+- **Two harness bugs of the usual shape**: `explain-misses.py` hard-coded a
+  dead scratchpad path (it resolves `third_party/juliet/C` now, or `--root` /
+  `$KORDON_JULIET`), and its `nargs="*"` pass-through lost everything after
+  `--`, so a "with `--ctu`" survey silently ran without it. Both fixed; both
+  had printed plausible tables.

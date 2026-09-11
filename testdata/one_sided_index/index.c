@@ -3,6 +3,8 @@
  * The dynamic layer cannot be relied on for this class: the flawed branch is
  * taken only when rand() happens to return a positive value, so a sanitizer
  * reports nothing on the other runs. The code is wrong either way.
+ *
+ * @kordon cwe: 129, 124
  */
 #include <stdlib.h>
 #include <stdio.h>

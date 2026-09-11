@@ -1,3 +1,4 @@
+/* @kordon cwe: 125 */
 #define MAXSAT 64
 int ssat[MAXSAT];
 int table[16];

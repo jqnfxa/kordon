@@ -37,6 +37,10 @@
 
 namespace kordon_probe {
 
+// @kordon cwe: 665
+// @kordon flags: --ctu
+
+// @bad 665 -- m_ownsData unassigned when the nothrow allocation fails
 Vector::Vector(int length)
     : m_length(length)
 {
@@ -56,6 +60,7 @@ Vector::Vector(int length)
     }
 }
 
+// @bad 665 -- the borrow path never assigns m_ownsData
 Vector::Vector(double *data, int length)
     : m_length(length)
 {
@@ -93,7 +98,7 @@ void Vector::init(int length)
     // The uninitialized read. After the owning constructor's failure path
     // m_ownsData is garbage; if truthy, this returns claiming the buffer is
     // already the right size while m_data is still null.
-    if (length == m_length && m_ownsData) {
+    if (length == m_length && m_ownsData) {   // @expect 457
         return;
     }
 
@@ -112,7 +117,7 @@ void Vector::init(int length)
 double Vector::at(int index) const
 {
     // No null check: the object is supposed to be valid by construction.
-    return m_data[index];
+    return m_data[index];   // @expect 476
 }
 
 }  // namespace kordon_probe

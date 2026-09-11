@@ -3,6 +3,8 @@
  * core.DivideZero already reports the case where the divisor is provably
  * zero. It cannot bound a value that arrived from rand(), fscanf() or a
  * socket, and those are most of the ways this defect actually happens.
+ *
+ * @kordon cwe: 369
  */
 #include <stdlib.h>
 #include <stdio.h>
@@ -56,8 +58,8 @@ void local_divisor_good(int n)
  * propagates silently into every later result and surfaces as a nonsensical
  * number rather than a crash, which is harder to diagnose. Same confidence as
  * the integer case, lower severity, which is what the two axes are for. */
-void floating_divisor_good(void)
+void floating_divisor_advice(void)
 {
     double d = (double)rand();
-    printf("%f\n", 100.0 / d);
+    printf("%f\n", 100.0 / d);   /* @expect 369 -- reported, as advice */
 }

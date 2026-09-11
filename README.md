@@ -57,6 +57,18 @@ Kordon's own checks are `kordon-unsigned-subtraction` (CWE-191),
 
 A missing engine is reported as skipped rather than silently ignored.
 
+### Developing checks
+
+Work is organised in per-CWE-family *lanes* (`docs/lanes/README.md`), each in
+its own git worktree. The regression test is the fixture harness:
+
+```bash
+scripts/check-fixtures.py            # every testdata/ fixture: must find, must stay silent
+scripts/explain-misses.py 121 --misses   # Juliet detection rate per defect shape
+scripts/baseline.sh                  # whole Juliet baseline, diffed against the committed one
+scripts/lane.sh new <lane>           # a worktree + branch for one lane
+```
+
 Engines that are not distribution packages are built into a local, gitignored
 prefix under `third_party/`; nothing is installed system-wide:
 

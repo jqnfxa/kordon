@@ -1,5 +1,25 @@
 # Start here
 
+## Parallel lanes (2026-09-11)
+
+The CWEs are now worked as **eight lanes**, one agent each, one git worktree
+each under `.claude/worktree/<lane>` on branch `lane/<lane>`. The map, the
+per-lane briefs (scope, measured state, shape verdicts, ordered TODO, fixtures
+to mark and build) and the rules that keep the branches mergeable are in
+**`docs/lanes/README.md`**. The pipeline an agent follows is the
+`kordon-lane` skill (`.claude/skills/`), which hands off to `kordon-triage`,
+`kordon-fixture`, `kordon-check` and `kordon-measure`; merging is the
+`kordon-integrate` skill, run from this checkout only.
+
+    scripts/lane.sh new <lane>            # worktree, branch, shared third_party, build
+    scripts/check-fixtures.py             # every fixture: must find / must stay silent
+    scripts/explain-misses.py <cwe> --misses
+    scripts/baseline.sh                   # whole baseline vs data/juliet-baseline.json
+
+Lanes never write `data/juliet-baseline.json`, `docs/progress.md` or
+`CLAUDE.md`; their numbers and their ground truth go in the brief, and the
+integrator folds them in once per batch.
+
 The loop is: **pick a CWE, read its cases, decide what it needs, change one
 thing, re-measure, see whether the count moved.** Everything below exists to
 make that loop cheap and honest.
@@ -106,11 +126,23 @@ found that way — none of which have an analogue anywhere in Juliet.
 
 ## Currently open
 
-- **Sweep the rest of `clang-diagnostic-*`.** Three named, three gaps closed.
-- **CWE-690** — join CWE-252 (70%) and CWE-476 (84%), both already detected.
-- **Say what `--ikos` is worth** — 11% → 86% on CWE-126 is not a footnote.
-- **Move tiers F into Advice** so 191 and 197 stop reading as 0% surfaced when
-  the truth is "reported, correctly, as not an error".
-- **Nothing measures the union of the layers.** Static and dynamic are
-  separate runs over separate samples; a defect ASan catches still reads as a
-  miss in the static table.
+Every item below now has an owner lane; the brief holds the detail.
+
+- **The analyzer's loop budget** (`infra` TODO 1, `lifetime` TODO 1). Measured
+  2026-09-11: `max-loop=4` abandons every path after Juliet's 100-iteration
+  init loops; `widen-loops=true` or `unroll-loops=true` recovers the CWE-416
+  misses, and only `unroll-loops` recovers the CWE-590 `alloca` free. Kordon
+  passes no analyzer options today. The largest single lever found so far.
+- **`--ctu` by default** with a compile database (`infra` TODO 2).
+- **Sweep the rest of `clang-diagnostic-*`** — measured, as a by-check table
+  over Juliet (`misc` TODO 1).
+- **CWE-690** — an unchecked allocation result; nothing reports it, verified
+  against cppcheck `--inconclusive` and Clang SA (`null-chain` TODO 1).
+- **CWE-775** — `alpha.unix.Stream` fires and is not enabled (`lifetime` TODO 3).
+- **Say what `--ikos` is worth**, and whether a numeric domain cuts its 44.6%
+  FP on CWE-126 (`bounds-read` TODO 2).
+- **Move tier F into Advice** (`integer` TODO 2).
+- **The union of the layers** (`infra` TODO 4).
+- **Windows-only Juliet cases** counted as static misses — 775 loses 13 of 40
+  units (`infra` TODO 3).
+- **23 of the 28 harness-run fixtures are unmarked**; each brief names its own.
